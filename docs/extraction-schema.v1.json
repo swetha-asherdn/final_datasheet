@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://velloresemicon.local/schemas/extraction-schema.v1.json",
+  "title": "PDF Extraction Manifest v1",
+  "type": "object",
+  "required": ["schemaVersion", "projectId", "sourceFile", "pageCount", "processing", "summary", "pages"],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "projectId": { "type": "string", "minLength": 1 },
+    "sourceFile": {
+      "type": "object",
+      "required": ["storageKey", "originalFileName", "checksum"],
+      "properties": {
+        "storageKey": { "type": "string", "minLength": 1 },
+        "originalFileName": { "type": "string", "minLength": 1 },
+        "checksum": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "pageCount": { "type": "integer", "minimum": 0 },
+    "processing": {
+      "type": "object",
+      "required": ["startedAt", "completedAt", "durationMs", "nativeTextDetected", "ocrUsed"],
+      "properties": {
+        "startedAt": { "type": "string", "format": "date-time" },
+        "completedAt": { "type": "string", "format": "date-time" },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "nativeTextDetected": { "type": "boolean" },
+        "ocrUsed": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "summary": {
+      "type": "object",
+      "required": ["textBlockCount", "imageCount", "tableCount", "warningCount"],
+      "properties": {
+        "textBlockCount": { "type": "integer", "minimum": 0 },
+        "imageCount": { "type": "integer", "minimum": 0 },
+        "tableCount": { "type": "integer", "minimum": 0 },
+        "warningCount": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "pages": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/page" }
+    },
+    "warnings": { "type": "array", "items": { "type": "string" }, "default": [] }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "box": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "width": { "type": "number", "minimum": 0 },
+        "height": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "textBlock": {
+      "type": "object",
+      "required": ["id", "type", "text", "pageNumber", "boundingBox", "extractionMethod", "confidence", "readingOrderIndex"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "enum": ["heading", "paragraph", "list_item", "header", "footer", "text_block", "unknown_text_block"] },
+        "text": { "type": "string" },
+        "pageNumber": { "type": "integer", "minimum": 1 },
+        "boundingBox": { "$ref": "#/$defs/box" },
+        "fontSize": { "type": ["number", "null"] },
+        "fontFamily": { "type": ["string", "null"] },
+        "fontWeight": { "type": ["string", "null"] },
+        "fontStyle": { "type": ["string", "null"] },
+        "textColor": { "type": ["string", "null"] },
+        "alignment": { "type": ["string", "null"] },
+        "extractionMethod": { "enum": ["native", "ocr"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "readingOrderIndex": { "type": "integer", "minimum": 0 },
+        "warnings": { "type": "array", "items": { "type": "string" }, "default": [] }
+      },
+      "additionalProperties": false
+    },
+    "image": {
+      "type": "object",
+      "required": ["id", "pageNumber", "storageKey", "width", "height", "boundingBox", "mimeType", "extractionMethod", "confidence", "warnings"],
+      "properties": {
+        "id": { "type": "string" },
+        "pageNumber": { "type": "integer", "minimum": 1 },
+        "storageKey": { "type": "string" },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "boundingBox": { "$ref": "#/$defs/box" },
+        "mimeType": { "type": "string" },
+        "originalFormat": { "type": ["string", "null"] },
+        "extractionMethod": { "type": "string" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "tableCell": {
+      "type": "object",
+      "required": ["text", "rowSpan", "colSpan"],
+      "properties": {
+        "text": { "type": "string" },
+        "rowSpan": { "type": "integer", "minimum": 1 },
+        "colSpan": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "table": {
+      "type": "object",
+      "required": ["id", "type", "pageNumber", "boundingBox", "rows", "confidence", "extractionMethod", "warnings"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "const": "table" },
+        "pageNumber": { "type": "integer", "minimum": 1 },
+        "boundingBox": { "$ref": "#/$defs/box" },
+        "rows": { "type": "array", "items": { "type": "array", "items": { "$ref": "#/$defs/tableCell" } } },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "extractionMethod": { "enum": ["pdfplumber", "camelot"] },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "page": {
+      "type": "object",
+      "required": ["pageNumber", "width", "height", "rotation", "previewStorageKey", "textBlocks", "images", "tables", "warnings", "confidence"],
+      "properties": {
+        "pageNumber": { "type": "integer", "minimum": 1 },
+        "width": { "type": "number", "minimum": 0 },
+        "height": { "type": "number", "minimum": 0 },
+        "rotation": { "type": "integer" },
+        "previewStorageKey": { "type": "string" },
+        "textBlocks": { "type": "array", "items": { "$ref": "#/$defs/textBlock" } },
+        "images": { "type": "array", "items": { "$ref": "#/$defs/image" } },
+        "tables": { "type": "array", "items": { "$ref": "#/$defs/table" } },
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

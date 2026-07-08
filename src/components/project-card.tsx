@@ -1,0 +1,7 @@
+import Link from "next/link";
+import { CalendarDays, FileText } from "lucide-react";
+import { StatusBadge } from "@/components/status-badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+
+type ProjectCardProps = { project: { id: string; name: string; status: string; originalPdf: unknown; createdAt: string; updatedAt: string } };
+export function ProjectCard({ project }: ProjectCardProps) { const pdf = project.originalPdf as { originalFileName: string; pageCount?: number | null }; return <Link href={`/projects/${project.id}`} className="block"><Card className="h-full transition hover:border-primary/50 hover:shadow-md"><CardHeader><div className="flex items-start justify-between gap-4"><CardTitle className="line-clamp-2">{project.name}</CardTitle><StatusBadge status={project.status} /></div></CardHeader><CardContent className="space-y-4 text-sm text-muted-foreground"><div className="flex items-center gap-2"><FileText size={17} /><span className="truncate">{pdf.originalFileName}</span></div><div className="grid gap-2 sm:grid-cols-2"><span className="flex items-center gap-2"><CalendarDays size={16} />Created {new Date(project.createdAt).toLocaleDateString()}</span><span>Updated {new Date(project.updatedAt).toLocaleDateString()}</span></div><span>{pdf.pageCount ? `${pdf.pageCount} pages` : "Page count pending"}</span></CardContent></Card></Link>; }

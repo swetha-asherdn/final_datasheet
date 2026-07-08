@@ -1,0 +1,16 @@
+import Link from "next/link";
+import { Plus, Search } from "lucide-react";
+import { PROJECT_STATUSES, type ProjectStatus } from "@/lib/project-status";
+import { requireUser } from "@/server/auth/session";
+import { connectToDatabase } from "@/server/db";
+import { listProjects } from "@/server/repositories/projects";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ProjectCard } from "@/components/project-card";
+
+export default async function DashboardPage({ searchParams }: { searchParams: Promise<{ q?: string; status?: string; page?: string }> }) {
+  const params = await searchParams; const user = await requireUser(); await connectToDatabase();
+  const status = PROJECT_STATUSES.includes(params.status as ProjectStatus) ? (params.status as ProjectStatus) : "ALL";
+  const projects = await listProjects({ ownerId: user.id, search: params.q, status, page: Number(params.page ?? 1) });
+  return <main className="mx-auto max-w-6xl px-4 py-8"><div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><h1 className="text-3xl font-semibold tracking-tight">Projects</h1><p className="mt-2 text-muted-foreground">Upload datasheets, track processing, and prepare reviews.</p></div><Button asChild><Link href="/projects/new"><Plus size={18} />Create Project</Link></Button></div><form className="mt-8 grid gap-3 rounded-lg border bg-white p-4 sm:grid-cols-[1fr_220px_auto]"><div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={17} /><Input name="q" defaultValue={params.q ?? ""} className="pl-9" placeholder="Search by project name" /></div><select name="status" defaultValue={status} className="h-10 rounded-md border border-input bg-white px-3 text-sm"><option value="ALL">All statuses</option>{PROJECT_STATUSES.map((item) => <option key={item} value={item}>{item.replace("_", " ")}</option>)}</select><Button variant="secondary">Apply</Button></form>{projects.items.length === 0 ? <section className="mt-8 rounded-lg border border-dashed bg-white px-6 py-16 text-center"><h2 className="text-xl font-semibold">No projects yet</h2><p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">Create Project to upload the first private PDF and queue the initial processing job.</p><Button className="mt-5" asChild><Link href="/projects/new">Create Project</Link></Button></section> : <div className="mt-8 grid gap-4 md:grid-cols-2">{projects.items.map((project) => <ProjectCard key={project.id} project={project} />)}</div>}<div className="mt-8 flex items-center justify-between text-sm text-muted-foreground"><span>Page {projects.page} of {projects.pageCount}</span><div className="flex gap-2">{projects.page > 1 ? <Button variant="outline" size="sm" asChild><Link href={`/dashboard?page=${projects.page - 1}`}>Previous</Link></Button> : <Button variant="outline" size="sm" disabled>Previous</Button>}{projects.page < projects.pageCount ? <Button variant="outline" size="sm" asChild><Link href={`/dashboard?page=${projects.page + 1}`}>Next</Link></Button> : <Button variant="outline" size="sm" disabled>Next</Button>}</div></div></main>;
+}
