@@ -1,8 +1,8 @@
 # Datasheet VelloreSemicon PDF Extractor
 
-This repository contains the Phase 0, Phase 1, and Phase 2 foundation for a production-minded PDF Extractor and Editor. It provides authentication, protected project management, private PDF upload storage, Redis/BullMQ processing, MongoDB Atlas persistence, a FastAPI extraction worker, and a read-only extraction review screen.
+This repository contains the Phase 0 through Phase 3 foundation for a production-minded PDF Extractor and Datasheet Composer. It provides authentication, protected project management, private PDF upload storage, Redis/BullMQ processing, MongoDB Atlas persistence, a FastAPI extraction worker, read-only extraction review, and an editable Vellore Semicon datasheet composer.
 
-Phase 3 editing and Phase 4 export are intentionally not implemented yet.
+Phase 4 export is intentionally not implemented yet.
 
 ## Phase 2 Architecture
 
@@ -120,7 +120,41 @@ MongoDB is external through `MONGODB_URI`; Compose does not start a local MongoD
 - Page previews: `users/{ownerId}/projects/{projectId}/previews/page-{pageNumber}.jpg`
 - Extracted images: `users/{ownerId}/projects/{projectId}/extracted/images/page-{pageNumber}/{imageId}.png`
 
-Artifacts remain private. API responses return short-lived signed URLs only where the UI needs to render previews or images.
+Artifacts remain private. Browser-facing review and editor images use protected Next.js artifact proxy routes rather than permanent public MinIO URLs.
+
+## Phase 3 Datasheet Composer
+
+Phase 3 adds an editable datasheet layer on top of the completed extraction data:
+
+```text
+Completed ExtractionRun + ExtractedPage[]
+-> generic header/footer/source-branding cleanup
+-> source cleanup report with reviewable decisions
+-> Tiptap-compatible editable body JSON
+-> Vellore Semicon template settings
+-> DatasheetDocument + DatasheetTemplateSettings in MongoDB
+```
+
+The cleanup engine does not hard-code vendor names. It classifies likely source branding through page layout and repetition: top 12-15% page regions are possible headers, bottom 10-12% are possible footers, repeated text/images across similar positions are likely old branding, and page numbers, footer URLs, revision/date/copyright lines are removable when confidence is high. Removed and uncertain items are stored in `sourceCleanupReport`, so users can restore or keep them removed from the Cleanup Review tab.
+
+The default Vellore Semicon template uses a local logo asset at `public/branding/vellore-semicon-logo.svg`, A4 portrait sizing, navy `#0D2B55`, accent `#D6533E`, footer text `www.velloresemicon.com`, page numbers, and `Preliminary Datasheet | Rev. A` revision text. The Branding Template tab lets users edit product code, title/category, website, status, revision, and colors. Header/footer settings are stored separately from the editor body so Phase 4 export can render them consistently.
+
+To create an editable datasheet:
+
+1. Upload a PDF and wait for the project to reach `REVIEW_REQUIRED`.
+2. Open the project detail page.
+3. Use `Create editable datasheet` from the Datasheet Composer tabs.
+4. Edit body text, headings, lists, images, and tables in the Datasheet Editor tab.
+5. Save manually or let autosave persist editor JSON after changes.
+6. Review removed/uncertain source branding in Cleanup Review and restore items when needed.
+
+Known Phase 3 limitations:
+
+- Header/footer removal is confidence-based and reviewable; unusual layouts can need manual restore/remove.
+- Complex merged technical tables may need manual cleanup after conversion.
+- Image replacement is not fully polished; extracted images render through protected artifact routes.
+- Exact page-canvas editing is not part of this phase.
+- PDF export, DOCX export, Puppeteer rendering, and final document download are deferred to Phase 4.
 
 ## Reviewing Extraction Data
 
@@ -156,9 +190,6 @@ Retries are owner-protected and blocked while another extraction job is active.
 - Password-protected PDFs are not supported.
 - Exact editable reproduction is not promised yet.
 
-## Phase 3 Handoff Notes
-
-Phase 3 should build the editable review/editor layer on top of the existing `ExtractionRun` and `ExtractedPage` data. Tiptap, drag-and-drop editing, image/table editing, and PDF/DOCX export remain out of scope for Phase 2.
 
 ## Quality Commands
 
@@ -180,3 +211,4 @@ docker compose config
 - If OCR returns weak text, confirm `tesseract-ocr` and the requested `OCR_LANGUAGES` data are installed in the worker image.
 - If Docker web cannot connect to services, use Compose hostnames in `.env` for containerized services: `redis`, `minio`, and `worker`. Keep `MONGODB_URI` pointed at Atlas.
 - If host-local Next.js cannot connect, use `localhost` endpoints instead.
+

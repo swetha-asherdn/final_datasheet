@@ -8,3 +8,23 @@
   }
   body { @apply bg-background text-foreground antialiased; }
 }
+
+@layer components {
+  .datasheet-editor-surface { @apply mx-auto max-w-[860px] text-slate-900; }
+  .ProseMirror h1 { @apply mb-4 mt-8 border-b border-slate-200 pb-2 text-xl font-semibold uppercase text-slate-950; }
+  .ProseMirror h2 { @apply mb-3 mt-6 text-lg font-semibold uppercase text-slate-900; }
+  .ProseMirror h3 { @apply mb-2 mt-5 text-base font-semibold text-slate-900; }
+  .ProseMirror p { @apply mb-3; }
+  .ProseMirror ul { @apply mb-4 list-disc space-y-1 pl-6; }
+  .ProseMirror ol { @apply mb-4 list-decimal space-y-1 pl-6; }
+  .ProseMirror li p { @apply mb-1; }
+  .ProseMirror img { @apply mx-auto my-5 max-h-80 max-w-full rounded border border-slate-200 bg-white object-contain p-1; }
+  .ProseMirror table { @apply my-5 w-full table-fixed border-collapse text-xs; }
+  .ProseMirror td, .ProseMirror th { @apply border border-slate-300 px-2.5 py-2 align-top; }
+  .ProseMirror th { @apply bg-slate-100 font-semibold text-slate-950; }
+  .ProseMirror .image-caption, .ProseMirror .table-caption { @apply -mt-3 mb-5 text-center text-xs italic text-slate-500; }
+  .ProseMirror .datasheet-page-break { @apply my-8 border-y border-dashed border-slate-300 py-2 text-center text-xs uppercase tracking-wide text-slate-500; }
+  .ProseMirror .table-review { @apply my-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900; }
+  .ProseMirror .table-review-text { @apply rounded border border-amber-200 bg-white px-3 py-2 font-mono text-xs text-slate-700; }
+  .ProseMirror-selectednode { @apply outline outline-2 outline-primary; }
+}

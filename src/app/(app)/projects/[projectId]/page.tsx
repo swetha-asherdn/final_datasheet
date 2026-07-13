@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { StatusBadge } from "@/components/status-badge";
-import { ExtractionReview } from "@/components/extraction-review";
+import { DatasheetComposer } from "@/components/datasheet-composer";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatBytes } from "@/lib/utils";
 import { requireUser } from "@/server/auth/session";
@@ -40,7 +40,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
       </div>
 
       {project.lastError ? <div className="mb-6 rounded-md bg-red-50 p-3 text-sm text-red-700">{project.lastError}</div> : null}
-      <ExtractionReview projectId={project.id} status={project.status as ProjectStatus} originalPdfUrl={signedUrl} />
+      <DatasheetComposer projectId={project.id} status={project.status as ProjectStatus} originalPdfUrl={signedUrl} />
     </main>
   );
 }
@@ -53,4 +53,5 @@ function InfoCard({ label, value }: { label: string; value: string }) {
     </Card>
   );
 }
+
 

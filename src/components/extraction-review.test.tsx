@@ -87,7 +87,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   imageOutcomes.clear();
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -196,5 +196,6 @@ describe("ExtractionReview preview rendering", () => {
     });
   });
 });
+
 
 

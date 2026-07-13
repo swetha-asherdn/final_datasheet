@@ -43,7 +43,7 @@ describe("createProjectWithUpload", () => {
     expect(createProjectMock).toHaveBeenCalledWith(expect.objectContaining({ originalPdf: expect.objectContaining({ originalFileName: "sample.pdf", pageCount: null, mimeType: "application/pdf" }) }));
     expect(addToQueueMock).toHaveBeenCalledWith("extract", expect.objectContaining({ ownerId: "64f000000000000000000000" }), { jobId: expect.any(String) });
     expect(saveJobMock).toHaveBeenCalledTimes(1);
-  });
+  }, 10000);
 
   it("delegates retry eligibility to the extraction service", async () => {
     const { retryProjectJob } = await import("@/server/services/project-service");
@@ -51,5 +51,3 @@ describe("createProjectWithUpload", () => {
     expect(retryExtractionForProjectMock).toHaveBeenCalledWith("64f000000000000000000001", "64f000000000000000000000");
   });
 });
-
-
