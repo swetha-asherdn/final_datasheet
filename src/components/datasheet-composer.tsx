@@ -16,7 +16,7 @@ import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
 import { EditorContent, useEditor, type JSONContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { Bold, Heading1, Heading2, ImageIcon, Italic, List, ListOrdered, RefreshCcw, Save, SubscriptIcon, SuperscriptIcon, Table2, UnderlineIcon } from "lucide-react";
+import { Bold, Download, FileDown, Heading1, Heading2, ImageIcon, Italic, List, ListOrdered, RefreshCcw, Save, SubscriptIcon, SuperscriptIcon, Table2, UnderlineIcon } from "lucide-react";
 import { ExtractionReview } from "@/components/extraction-review";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,14 +24,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 type ProjectStatus = "DRAFT" | "UPLOADED" | "QUEUED" | "PROCESSING" | "REVIEW_REQUIRED" | "FAILED";
-type ComposerTab = "extraction" | "editor" | "template" | "cleanup";
+type ComposerTab = "extraction" | "editor" | "template" | "cleanup" | "export";
 type CleanupFilter = "all" | "removed-text" | "removed-images" | "uncertain" | "restored";
 type CleanupItem = { id: string; itemType: "text" | "image"; pageNumber: number; text?: string; storageKey?: string; confidence: number; reasons: string[]; decision: string };
 type CleanupReport = { removedTextBlocks: CleanupItem[]; removedImages: CleanupItem[]; uncertainItems: CleanupItem[]; confidence: number; reasonCodes: string[] };
 type DatasheetDocument = { id: string; status: string; title: string; productCode: string; productCategory: string; editorJson: JSONContent; sourceCleanupReport: CleanupReport; lastSavedAt: string };
 type TemplateSettings = { id: string; logoAssetPath: string; companyName: string; website: string; productCode: string; productTitle: string; documentStatus: string; revision: string; primaryColor: string; accentColor: string; footerText: string; showPageNumbers: boolean };
 type DatasheetBundle = { document: DatasheetDocument; template: TemplateSettings };
+type DatasheetExport = { id: string; status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED"; filename: string; fileSize: number | null; errorMessage: string | null; completedAt: string | null; createdAt: string; downloadUrl: string | null };
 type SaveState = "idle" | "saving" | "saved" | "failed";
+type ExportState = "idle" | "loading" | "exporting" | "failed";
 type ApiErrorBody = { error?: { message?: string; code?: string; details?: unknown } };
 
 type Notice = { tone: "error" | "success"; text: string } | null;
@@ -59,6 +61,10 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
   const [loadState, setLoadState] = useState<"loading" | "ready" | "missing" | "failed">("loading");
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [exports, setExports] = useState<DatasheetExport[]>([]);
+  const [exportState, setExportState] = useState<ExportState>("idle");
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [hasUnsavedEditorChanges, setHasUnsavedEditorChanges] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
   const [isPending, startTransition] = useTransition();
   const canCreate = status === "REVIEW_REQUIRED";
@@ -81,6 +87,8 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
     }
     setBundle((await response.json()) as DatasheetBundle);
     setLoadState("ready");
+    setHasUnsavedEditorChanges(false);
+    void loadExports();
   }
 
   function createDatasheet() {
@@ -93,6 +101,8 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
       setBundle((await response.json()) as DatasheetBundle);
       setLoadState("ready");
       setTab("editor");
+      setHasUnsavedEditorChanges(false);
+      void loadExports();
       setNotice(null);
     });
   }
@@ -111,6 +121,8 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
       setBundle((await response.json()) as DatasheetBundle);
       setSaveState("saved");
       setSaveError(null);
+      setHasUnsavedEditorChanges(false);
+      void loadExports();
       setTab("editor");
       setNotice({ tone: "success", text: "Editable datasheet regenerated from the latest extraction." });
     });
@@ -129,6 +141,7 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
     }
     setBundle((await response.json()) as DatasheetBundle);
     setSaveState("saved");
+    setHasUnsavedEditorChanges(false);
     return true;
   }
 
@@ -148,6 +161,34 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
     return true;
   }
 
+  async function loadExports() {
+    setExportState((current) => current === "exporting" ? current : "loading");
+    const response = await fetch(`/api/projects/${projectId}/datasheet/export`, { cache: "no-store" });
+    if (!response.ok) {
+      setExportState("failed");
+      setExportError(await safeErrorMessage(response, "Export history could not be loaded."));
+      return;
+    }
+    const body = await response.json() as { exports?: DatasheetExport[] };
+    setExports(body.exports ?? []);
+    setExportState("idle");
+    setExportError(null);
+  }
+
+  async function createPdfExport() {
+    setExportState("exporting");
+    setExportError(null);
+    const response = await fetch(`/api/projects/${projectId}/datasheet/export/pdf`, { method: "POST" });
+    if (!response.ok) {
+      setExportState("failed");
+      setExportError(await safeErrorMessage(response, "PDF export failed."));
+      return;
+    }
+    const created = await response.json() as DatasheetExport;
+    setExports((current) => [created, ...current.filter((item) => item.id !== created.id)]);
+    setExportState("idle");
+  }
+
   async function cleanupAction(action: "restore" | "remove", itemId: string) {
     const response = await fetch(`/api/projects/${projectId}/datasheet/cleanup/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ itemId }) });
     if (response.ok) setBundle((await response.json()) as DatasheetBundle);
@@ -161,6 +202,7 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
           <TabButton active={tab === "editor"} onClick={() => setTab("editor")} disabled={!bundle}>Datasheet Editor</TabButton>
           <TabButton active={tab === "template"} onClick={() => setTab("template")} disabled={!bundle}>Branding Template</TabButton>
           <TabButton active={tab === "cleanup"} onClick={() => setTab("cleanup")} disabled={!bundle}>Cleanup Review</TabButton>
+          <TabButton active={tab === "export"} onClick={() => { setTab("export"); void loadExports(); }} disabled={!bundle}>Exports</TabButton>
         </div>
         {canRegenerate ? <Button type="button" variant="outline" size="sm" disabled={isPending} onClick={regenerateDatasheet}><RefreshCcw size={15} />{isPending ? "Regenerating..." : "Regenerate editable datasheet from extraction"}</Button> : null}
       </div>
@@ -171,14 +213,15 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
       {tab !== "extraction" && loadState === "loading" ? <ComposerState label="Loading editable datasheet..." /> : null}
       {tab !== "extraction" && loadState === "missing" ? <CreateDatasheetPanel canCreate={canCreate} isPending={isPending} onCreate={createDatasheet} /> : null}
       {tab !== "extraction" && loadState === "failed" ? <ComposerState label="Datasheet composer could not be loaded." /> : null}
-      {tab === "editor" && bundle ? <DatasheetEditor bundle={bundle} saveState={saveState} saveError={saveError} onSave={saveDocument} /> : null}
+      {tab === "editor" && bundle ? <DatasheetEditor bundle={bundle} saveState={saveState} saveError={saveError} onDirtyChange={setHasUnsavedEditorChanges} onSave={saveDocument} /> : null}
       {tab === "template" && bundle ? <TemplatePanel template={bundle.template} saveState={saveState} saveError={saveError} onSave={saveTemplate} /> : null}
       {tab === "cleanup" && bundle ? <CleanupPanel report={bundle.document.sourceCleanupReport} onRestore={(id) => cleanupAction("restore", id)} onRemove={(id) => cleanupAction("remove", id)} /> : null}
+      {tab === "export" && bundle ? <ExportPanel exports={exports} exportState={exportState} exportError={exportError} hasUnsavedChanges={hasUnsavedEditorChanges} onExport={createPdfExport} onRefresh={loadExports} /> : null}
     </div>
   );
 }
 
-function DatasheetEditor({ bundle, saveState, saveError, onSave }: { bundle: DatasheetBundle; saveState: SaveState; saveError: string | null; onSave: (input: Partial<DatasheetDocument>) => Promise<boolean> }) {
+function DatasheetEditor({ bundle, saveState, saveError, onDirtyChange, onSave }: { bundle: DatasheetBundle; saveState: SaveState; saveError: string | null; onDirtyChange: (dirty: boolean) => void; onSave: (input: Partial<DatasheetDocument>) => Promise<boolean> }) {
   const [title, setTitle] = useState(bundle.document.title);
   const [productCode, setProductCode] = useState(bundle.document.productCode);
   const [productCategory, setProductCategory] = useState(bundle.document.productCategory);
@@ -188,7 +231,10 @@ function DatasheetEditor({ bundle, saveState, saveError, onSave }: { bundle: Dat
     immediatelyRender: false,
     extensions: editorExtensions,
     content: bundle.document.editorJson,
-    onUpdate: () => setDirty(true),
+    onUpdate: () => {
+      setDirty(true);
+      onDirtyChange(true);
+    },
     editorProps: { attributes: { class: "datasheet-editor-surface min-h-[620px] bg-white px-7 py-6 text-[0.95rem] leading-7 outline-none" } }
   });
 
@@ -199,7 +245,8 @@ function DatasheetEditor({ bundle, saveState, saveError, onSave }: { bundle: Dat
     setProductCode(bundle.document.productCode);
     setProductCategory(bundle.document.productCategory);
     setDirty(false);
-  }, [bundle.document.editorJson, bundle.document.lastSavedAt, bundle.document.productCategory, bundle.document.productCode, bundle.document.title, editor]);
+    onDirtyChange(false);
+  }, [bundle.document.editorJson, bundle.document.lastSavedAt, bundle.document.productCategory, bundle.document.productCode, bundle.document.title, editor, onDirtyChange]);
 
   useEffect(() => {
     if (!dirty || !editor) return;
@@ -217,13 +264,17 @@ function DatasheetEditor({ bundle, saveState, saveError, onSave }: { bundle: Dat
   function updateMetadata(setter: (value: string) => void, value: string) {
     setter(value);
     setDirty(true);
+    onDirtyChange(true);
   }
 
   async function saveNow() {
     if (!editor) return;
     if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
     const saved = await onSave({ title, productCode, productCategory, editorJson: editor.getJSON(), status: "EDITING" });
-    if (saved) setDirty(false);
+    if (saved) {
+      setDirty(false);
+      onDirtyChange(false);
+    }
   }
 
   return (
@@ -262,6 +313,47 @@ function SaveStatus({ dirty, saveState, saveError }: { dirty: boolean; saveState
   if (saveState === "failed") return <span className="text-red-700">Save failed: {saveError ?? "Please try again."}</span>;
   if (dirty) return <span>Unsaved changes</span>;
   return <span>Saved</span>;
+}
+
+function ExportPanel({ exports, exportState, exportError, hasUnsavedChanges, onExport, onRefresh }: { exports: DatasheetExport[]; exportState: ExportState; exportError: string | null; hasUnsavedChanges: boolean; onExport: () => Promise<void>; onRefresh: () => Promise<void> }) {
+  const isExporting = exportState === "exporting";
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <CardTitle>Branded PDF Export</CardTitle>
+            <p className="mt-1 text-sm text-muted-foreground">Generate a Vellore Semicon PDF from the saved editable datasheet and template.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" onClick={() => void onRefresh()} disabled={isExporting}><RefreshCcw size={15} />Refresh</Button>
+            <Button type="button" onClick={() => void onExport()} disabled={isExporting || hasUnsavedChanges}><FileDown size={15} />{isExporting ? "Exporting..." : "Export PDF"}</Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {hasUnsavedChanges ? <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-800">Save changes before export.</p> : null}
+        {exportError ? <p className="rounded-md bg-red-50 p-3 text-sm text-red-700">{exportError}</p> : null}
+        {exportState === "loading" ? <p className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">Loading export history...</p> : null}
+        {exports.length === 0 && exportState !== "loading" ? <p className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">No PDF exports yet.</p> : null}
+        {exports.map((item) => <ExportHistoryRow key={item.id} item={item} />)}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ExportHistoryRow({ item }: { item: DatasheetExport }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-md border bg-white p-3 md:flex-row md:items-center md:justify-between">
+      <div>
+        <p className="font-medium">{item.filename}</p>
+        <p className="text-sm text-muted-foreground">{item.status} - {item.completedAt ? new Date(item.completedAt).toLocaleString() : new Date(item.createdAt).toLocaleString()}{item.fileSize ? ` - ${formatBytes(item.fileSize)}` : ""}</p>
+        {item.errorMessage ? <p className="mt-1 text-sm text-red-700">{item.errorMessage}</p> : null}
+      </div>
+      {item.downloadUrl ? <Button type="button" asChild><a href={item.downloadUrl}><Download size={15} />Download PDF</a></Button> : null}
+    </div>
+  );
 }
 
 function EditorToolbar({ editor }: { editor: ReturnType<typeof useEditor> | null }) {
@@ -391,6 +483,12 @@ function TabButton({ active, disabled, onClick, children }: { active: boolean; d
 
 function ToolButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
   return <Button type="button" variant="outline" size="sm" title={label} aria-label={label} onClick={onClick}>{children}</Button>;
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 async function safeErrorMessage(response: Response, fallback: string) {

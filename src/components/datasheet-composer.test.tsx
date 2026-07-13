@@ -41,6 +41,17 @@ const initialBundle = {
   }
 };
 
+const completedExport = {
+  id: "export1",
+  status: "COMPLETED",
+  filename: "vellore-semicon-vs123-2026-07-13.pdf",
+  fileSize: 4096,
+  errorMessage: null,
+  completedAt: "2026-07-13T10:00:00.000Z",
+  createdAt: "2026-07-13T09:59:00.000Z",
+  downloadUrl: "/api/projects/project-1/datasheet/export/export1/download"
+};
+
 const regeneratedBundle = {
   ...initialBundle,
   document: {
@@ -78,6 +89,8 @@ beforeEach(() => {
     if (url.endsWith("/api/projects/project-1/datasheet") && !init?.method) return new Response(JSON.stringify({ error: { code: "DATASHEET_NOT_FOUND" } }), { status: 404 });
     if (url.endsWith("/api/projects/project-1/datasheet/create")) return jsonResponse(initialBundle, 201);
     if (url.endsWith("/api/projects/project-1/datasheet/regenerate")) return jsonResponse(regeneratedBundle, 200);
+    if (url.endsWith("/api/projects/project-1/datasheet/export") && !init?.method) return jsonResponse({ exports: [completedExport] }, 200);
+    if (url.endsWith("/api/projects/project-1/datasheet/export/pdf")) return jsonResponse(completedExport, 201);
     if (url.endsWith("/api/projects/project-1/datasheet") && init?.method === "PATCH") {
       if (failNextDocumentSave) return jsonResponse({ error: { message: "Invalid request", code: "VALIDATION_ERROR" } }, 422);
       return jsonResponse({ ...initialBundle, document: { ...initialBundle.document, lastSavedAt: "2026-07-08T10:05:00.000Z" } }, 200);
@@ -195,6 +208,40 @@ describe("DatasheetComposer", () => {
     expect(container.textContent).not.toContain("SOURCE HEADER");
     await act(async () => clickButton("Manually restored"));
     expect(container.textContent).toContain("RESTORED HEADER");
+  });
+
+
+  it("exports a branded PDF and shows download history", async () => {
+    await createDatasheet();
+    await act(async () => clickButton("Exports"));
+    await flush();
+    expect(container.textContent).toContain("Branded PDF Export");
+    expect(container.textContent).toContain("vellore-semicon-vs123-2026-07-13.pdf");
+
+    const buttonsBefore = fetchMock.mock.calls.length;
+    await act(async () => clickButton("Export PDF"));
+    await flush();
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/projects/project-1/datasheet/export/pdf", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(buttonsBefore);
+    expect(container.textContent).toContain("Download PDF");
+  });
+
+  it("prevents export while editor changes are unsaved", async () => {
+    await createDatasheet();
+    const titleInput = Array.from(container.querySelectorAll("input")).find((input) => input.value === "Generic Datasheet");
+    expect(titleInput).toBeDefined();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      setter?.call(titleInput, "Changed title");
+      titleInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => clickButton("Exports"));
+    await flush();
+
+    expect(container.textContent).toContain("Save changes before export.");
+    const exportButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Export PDF"));
+    expect(exportButton).toHaveProperty("disabled", true);
   });
 
   it("saves branding template fields", async () => {

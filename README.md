@@ -2,7 +2,7 @@
 
 This repository contains the Phase 0 through Phase 3 foundation for a production-minded PDF Extractor and Datasheet Composer. It provides authentication, protected project management, private PDF upload storage, Redis/BullMQ processing, MongoDB Atlas persistence, a FastAPI extraction worker, read-only extraction review, and an editable Vellore Semicon datasheet composer.
 
-Phase 4 export is intentionally not implemented yet.
+Phase 4 branded PDF export is implemented with Puppeteer/Chromium, private export storage, and protected download routes.
 
 ## Phase 2 Architecture
 
@@ -104,6 +104,7 @@ MongoDB is external through `MONGODB_URI`; Compose does not start a local MongoD
 - `OCR_MIN_NATIVE_TEXT_CHARS`: minimum native characters before OCR is skipped for a page.
 - `PREVIEW_ZOOM`: PyMuPDF render scale for page previews.
 - `MIN_EXTRACTED_IMAGE_SIDE`: minimum extracted image side length to ignore tiny masks/noise.
+- `PUPPETEER_EXECUTABLE_PATH`: optional Chromium/Chrome/Edge executable path for host-local PDF export. Docker sets `/usr/bin/chromium-browser`; Windows local development can use Chrome or Edge, for example `C:\Program Files\Google\Chrome\Application\chrome.exe`.
 
 ## Supported Extraction Behavior
 
@@ -154,7 +155,19 @@ Known Phase 3 limitations:
 - Complex merged technical tables may need manual cleanup after conversion.
 - Image replacement is not fully polished; extracted images render through protected artifact routes.
 - Exact page-canvas editing is not part of this phase.
-- PDF export, DOCX export, Puppeteer rendering, and final document download are deferred to Phase 4.
+- DOCX export and multi-template management are not part of Phase 4.
+
+## Phase 4 Branded PDF Export
+
+The Datasheet Composer `Exports` tab generates a Vellore Semicon branded PDF from the latest saved editor JSON and template settings. Export records are stored in MongoDB, generated PDFs are uploaded to private S3/MinIO storage, and downloads use owner-protected API routes instead of public object URLs.
+
+PDF rendering uses `puppeteer-core` with a Chromium executable resolved in this order:
+
+1. `PUPPETEER_EXECUTABLE_PATH` when set and valid.
+2. Common Linux/Docker paths such as `/usr/bin/chromium-browser` and `/usr/bin/chromium`.
+3. Common Windows Chrome and Edge install paths.
+
+Docker installs Chromium and fonts in the web/node image and sets `PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser`. For local Windows development, either run Docker for parity or set `PUPPETEER_EXECUTABLE_PATH` to Chrome or Edge in `.env`.
 
 ## Reviewing Extraction Data
 
@@ -211,4 +224,5 @@ docker compose config
 - If OCR returns weak text, confirm `tesseract-ocr` and the requested `OCR_LANGUAGES` data are installed in the worker image.
 - If Docker web cannot connect to services, use Compose hostnames in `.env` for containerized services: `redis`, `minio`, and `worker`. Keep `MONGODB_URI` pointed at Atlas.
 - If host-local Next.js cannot connect, use `localhost` endpoints instead.
+- If PDF export fails with a Chromium executable error, set `PUPPETEER_EXECUTABLE_PATH` or use Docker. On Windows, point it to Chrome or Edge; in Docker it defaults to `/usr/bin/chromium-browser`.
 
