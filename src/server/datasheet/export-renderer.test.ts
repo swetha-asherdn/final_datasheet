@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+﻿import { describe, expect, it } from "vitest";
 import {
   buildExportPageModel,
   paginateExportBlocks,
@@ -18,6 +18,8 @@ const template: ExportTemplateSnapshot = {
   productTitle: "Low-Dropout Regulators",
   documentStatus: "Preliminary Datasheet",
   revision: "Rev. A",
+  layoutMode: "two-column",
+  layoutDensity: "technical-dense",
   primaryColor: "#0D2B55",
   accentColor: "#D6533E",
 };
@@ -47,7 +49,7 @@ describe("export renderer", () => {
     expect(html).toContain("margin: 0;");
     expect(html).toContain('class="pdf-page"');
     expect(html).toContain('class="pdf-header"');
-    expect(html).toContain('class="pdf-body"');
+    expect(html).toContain('class="pdf-body layout-two-column layout-density-technical-dense"');
     expect(html).toContain('class="pdf-footer"');
     expect(html).toContain("CW29150R-XX / CW29150R-ADJ / CW29151R-XX");
     expect(html).toContain("Low-Dropout Regulators");
@@ -127,7 +129,7 @@ describe("export renderer", () => {
     expect(html).toContain("<h1>Features</h1>");
     expect(html).toContain("<em><strong>Fast response</strong></em>");
     expect(html).toContain("<ul>");
-    expect(html).toContain("<table>");
+    expect(html).toContain('<table class="technical-table');
     expect(html).toContain('class="content-image figure-image');
     expect(html).toContain('class="figure-caption"');
   });
@@ -180,9 +182,9 @@ describe("export renderer", () => {
         productCategory: template.productTitle,
         editorJson: {
           type: "doc",
-          content: Array.from({ length: 14 }, (_, index) => ({
+          content: Array.from({ length: 24 }, (_, index) => ({
             type: "paragraph",
-            content: [{ type: "text", text: `Paragraph ${index + 1} ` + "content ".repeat(45) }],
+            content: [{ type: "text", text: `Paragraph ${index + 1} ` + "content ".repeat(70) }],
           })),
         },
       },
@@ -359,6 +361,38 @@ describe("export renderer", () => {
     expect(blocks[0] && "html" in blocks[0] ? blocks[0].html : "").toContain("content-image");
   });
 
+  it("honors keep-with-next metadata from editor content", () => {
+    const blocks = renderTiptapNodesToExportBlocks([
+      { type: "paragraph", attrs: { keepWithNext: true }, content: [{ type: "text", text: "Keep this note with the next block." }] },
+      { type: "paragraph", content: [{ type: "text", text: "Following block." }] },
+    ]);
+
+    const first = blocks[0];
+    expect(first && first.kind === "html" ? first.keepWithNext : false).toBe(true);
+  });
+
+  it("renders image display size metadata into export classes", () => {
+    const html = renderDatasheetExportHtml({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: {
+          type: "doc",
+          content: [
+            { type: "image", attrs: { src: "data:image/png;base64,small", alt: "Small diagram", width: 800, height: 400, imageKey: "small", displaySize: "small" } },
+            { type: "image", attrs: { src: "data:image/png;base64,full", alt: "Full diagram", width: 1400, height: 500, imageKey: "full", displaySize: "full" } },
+          ],
+        },
+      },
+    }, { mode: "pdf" });
+
+    expect(html).toContain("figure-image-size-small");
+    expect(html).toContain("figure-image-size-full");
+    expect(html).toContain('style="width: 100%;"');
+  });
+
   it("uses image aspect ratio to estimate placement for wide and tall diagrams", () => {
     const blocks = renderTiptapNodesToExportBlocks([
       { type: "image", attrs: { src: "data:image/png;base64,wide", alt: "Wide diagram", width: 1800, height: 500, imageKey: "wide" } },
@@ -395,6 +429,167 @@ describe("export renderer", () => {
     expect(html).toContain("font-size: 7.1pt");
   });
 
+  it("allows small figures to stay inside a column while large diagrams remain full width", () => {
+    const html = renderDatasheetExportHtml({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: {
+          type: "doc",
+          content: [
+            { type: "image", attrs: { src: "data:image/png;base64,small", alt: "Typical application", width: 520, height: 360, imageKey: "small-figure", displaySize: "small" } },
+            { type: "paragraph", attrs: { class: "image-caption" }, content: [{ type: "text", text: "Figure 1. Typical application" }] },
+            { type: "image", attrs: { src: "data:image/png;base64,large", alt: "Pad location diagram", width: 1600, height: 700, imageKey: "pad-location", displaySize: "medium" } },
+            { type: "paragraph", attrs: { class: "image-caption" }, content: [{ type: "text", text: "Figure 2. Pad location diagram" }] },
+          ],
+        },
+      },
+    }, { mode: "pdf" });
+
+    expect(html).toContain("figure-block-column");
+    expect(html).toContain("figure-image-column");
+    expect(html).toContain("full-width-block");
+    expect(html).toContain("Pad location diagram");
+  });
+
+  it("keeps explicit page breaks while still avoiding caption-only auto pages", () => {
+    const pageModel = buildExportPageModel({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: {
+          type: "doc",
+          content: [
+            { type: "paragraph", content: [{ type: "text", text: "Intro text" }] },
+            { type: "pageBreak" },
+            { type: "paragraph", content: [{ type: "text", text: "Closing text" }] },
+          ],
+        },
+      },
+    });
+
+    expect(pageModel.pages.length).toBe(2);
+
+    const autoPacked = buildExportPageModel({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: {
+          type: "doc",
+          content: [
+            { type: "paragraph", content: [{ type: "text", text: "Dense paragraph 1 content content content content content content content content content content" }] },
+            { type: "paragraph", content: [{ type: "text", text: "Dense paragraph 2 content content content content content content content content content content" }] },
+            { type: "paragraph", content: [{ type: "text", text: "Dense paragraph 3 content content content content content content content content content content" }] },
+            { type: "paragraph", content: [{ type: "text", text: "Dense paragraph 4 content content content content content content content content content content" }] },
+            { type: "paragraph", content: [{ type: "text", text: "Dense paragraph 5 content content content content content content content content content content" }] },
+            { type: "paragraph", content: [{ type: "text", text: "Dense paragraph 6 content content content content content content content content content content" }] },
+            { type: "paragraph", content: [{ type: "text", text: "Dense paragraph 7 content content content content content content content content content content" }] },
+            { type: "paragraph", content: [{ type: "text", text: "Dense paragraph 8 content content content content content content content content content content" }] },
+            { type: "image", attrs: { src: "data:image/png;base64,small", alt: "Typical application", width: 520, height: 360, imageKey: "packed-small", displaySize: "small" } },
+            { type: "paragraph", attrs: { class: "image-caption" }, content: [{ type: "text", text: "Figure 3. Typical application" }] },
+          ],
+        },
+      },
+    });
+
+    expect(autoPacked.pages.every((page) => page.blocks.some((block) => block.kind !== "html" || block.role !== "caption"))).toBe(true);
+  });
+
+  it("supports comfortable density in preview/export output", () => {
+    const html = renderDatasheetExportHtml({
+      template: { ...template, layoutDensity: "comfortable" },
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Comfortable body" }] }] },
+      },
+    }, { mode: "pdf" });
+
+    expect(html).toContain('class="pdf-body layout-two-column layout-density-comfortable"');
+    expect(html).not.toContain('class="pdf-body layout-two-column layout-density-technical-dense"');
+  });
+  it("renders two-column technical sections while keeping figures and tables full width", () => {
+    const html = renderDatasheetExportHtml({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: {
+          type: "doc",
+          content: [
+            { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "GENERAL DESCRIPTION" }] },
+            { type: "paragraph", content: [{ type: "text", text: "Technical overview paragraph for column flow." }] },
+            { type: "paragraph", content: [{ type: "text", text: "Additional column paragraph with VIN and V OUT <= 5V." }] },
+            { type: "table", content: [
+              { type: "tableRow", content: [{ type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Parameter" }] }] }, { type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Value" }] }] }] },
+              { type: "tableRow", content: [{ type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "Current limit" }] }] }, { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "10uA" }] }] }] },
+            ] },
+            { type: "image", attrs: { src: "data:image/png;base64,abcd", alt: "Block diagram", width: 1200, height: 500 } },
+          ],
+        },
+      },
+    }, { mode: "pdf" });
+
+    expect(html).toContain("layout-two-column");
+    expect(html).toContain("layout-density-technical-dense");
+    expect(html).toContain("technical-columns-flow");
+    expect(html).toContain("column-gap: 3.8mm;");
+    expect(html).toContain("font-size: 7.55pt;");
+    expect(html).toContain("line-height: 1.18;");
+    expect(html).toContain("table-block full-width-block");
+    expect(html).toContain("figure-image");
+  });
+
+  it("keeps single-column output when requested", () => {
+    const html = renderDatasheetExportHtml({
+      template: { ...template, layoutMode: "single-column" },
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Single column body" }] }] },
+      },
+    }, { mode: "pdf" });
+
+    expect(html).toContain("layout-single-column");
+    expect(html).toContain("layout-density-technical-dense");
+    expect(html).not.toContain('<section class="page-body-block technical-columns">');
+  });
+
+  it("normalizes technical symbols and variable rendering in export text", () => {
+    const html = renderDatasheetExportHtml({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: {
+          type: "doc",
+          content: [{ type: "paragraph", content: [{ type: "text", text: "10uA 47uF 200x200 um ï„V OUT ï± SA T A <= 125Â°Ð¡ V OUT <= 5V I OUT >= 1A" }] }],
+        },
+      },
+    }, { mode: "pdf" });
+
+    expect(html).toContain("10µA");
+    expect(html).toContain("ΔV<sub>OUT</sub>");
+    expect(html).toContain("θ<sub>SA</sub>");
+    expect(html).toContain("T<sub>A</sub>");
+    expect(html).toContain("47µF");
+    expect(html).toContain("200×200 µm");
+    expect(html).toContain("≤ 5V");
+    expect(html).toContain("≥ 1A");
+    expect(html).toContain("V<sub>OUT</sub>");
+    expect(html).toContain("I<sub>OUT</sub>");
+  });
+
   it("escapes dangerous HTML and scripts from editor content", () => {
     const html = renderDatasheetExportHtml({
       template,
@@ -416,5 +611,57 @@ describe("export renderer", () => {
     expect(html).not.toContain("<script>alert(1)</script>");
     expect(html).toContain('href="#"');
   });
+  it("uses a tighter technical-dense table profile than the comfortable base rules", () => {
+    const html = renderDatasheetExportHtml({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: {
+          type: "doc",
+          content: [{
+            type: "table",
+            content: [
+              { type: "tableRow", content: [{ type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Parameter" }] }] }, { type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Value" }] }] }] },
+              { type: "tableRow", content: [{ type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "Output current" }] }] }, { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "1.5A" }] }] }] },
+            ],
+          }],
+        },
+      },
+    }, { mode: "pdf" });
+
+    expect(html).toContain("font-size: 6.15pt;");
+    expect(html).toContain("font-size: 5.9pt;");
+    expect(html).toContain("padding: 0.75px 1.8px;");
+    expect(html).toContain("margin: 0 0 0.95mm;");
+  });
+
+  it("keeps a small column figure on the same page as nearby dense body text when space is available", () => {
+    const intro = { type: "paragraph", content: [{ type: "text", text: "Dense introduction paragraph. ".repeat(14) }] };
+    const pageModel = buildExportPageModel({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: {
+          type: "doc",
+          content: [
+            intro,
+            intro,
+            intro,
+            { type: "image", attrs: { src: "data:image/png;base64,small", alt: "Typical application", width: 520, height: 360, imageKey: "dense-small", displaySize: "small" } },
+            { type: "paragraph", attrs: { class: "image-caption" }, content: [{ type: "text", text: "Figure 8. Typical application" }] },
+          ],
+        },
+      },
+    });
+
+    expect(pageModel.pages).toHaveLength(1);
+    expect(pageModel.pages[0]?.blocks.some((block) => block.kind === "html" && block.role === "figure" && block.columnEligible)).toBe(true);
+  });
 });
+
+
 

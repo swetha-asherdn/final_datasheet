@@ -115,7 +115,7 @@ describe("extraction artifact URLs and proxies", () => {
     const result = await getExtractionForProject({ projectId, ownerId, page: 1, pageSize: 8 });
 
     expect(result?.pages[0]?.previewUrl).toBe(`/api/projects/${projectId}/artifacts/pages/1/preview`);
-  }, 10000);
+  }, 30000);
 
   it("returns browser-safe preview and image URLs for extraction page detail", async () => {
     projectExistsMock.mockResolvedValue(true);

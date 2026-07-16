@@ -1,3 +1,5 @@
+import type { DatasheetLayoutDensity, DatasheetLayoutMode } from "@/server/datasheet/technical-text";
+
 export type DatasheetTemplateDefaults = {
   logoAssetPath: string;
   companyName: string;
@@ -6,6 +8,8 @@ export type DatasheetTemplateDefaults = {
   productTitle: string;
   documentStatus: string;
   revision: string;
+  layoutMode: DatasheetLayoutMode;
+  layoutDensity: DatasheetLayoutDensity;
   pageSize: "A4";
   orientation: "portrait";
   primaryColor: string;
@@ -27,6 +31,8 @@ export function createDefaultTemplateSettings(params: { productCode?: string; pr
     productTitle: params.productTitle ?? "",
     documentStatus,
     revision,
+    layoutMode: "two-column",
+    layoutDensity: "technical-dense",
     pageSize: "A4",
     orientation: "portrait",
     primaryColor: "#0D2B55",

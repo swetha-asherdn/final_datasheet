@@ -46,6 +46,8 @@ export const templateSettingsPatchSchema = z.object({
   productTitle: z.string().trim().max(200).optional(),
   documentStatus: z.string().trim().max(80).optional(),
   revision: z.string().trim().max(80).optional(),
+  layoutMode: z.enum(["two-column", "single-column"]).optional(),
+  layoutDensity: z.enum(["comfortable", "technical-dense"]).optional(),
   pageSize: z.enum(["A4"]).optional(),
   orientation: z.enum(["portrait", "landscape"]).optional(),
   primaryColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),

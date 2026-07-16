@@ -34,6 +34,8 @@ const initialBundle = {
     productTitle: "Generic Datasheet",
     documentStatus: "Preliminary Datasheet",
     revision: "Rev. A",
+    layoutMode: "two-column",
+    layoutDensity: "technical-dense",
     primaryColor: "#0D2B55",
     accentColor: "#D6533E",
     footerText: "Preliminary Datasheet | Rev. A",
@@ -66,7 +68,9 @@ const regeneratedBundle = {
     ...initialBundle.template,
     productCode: "CW29150R-XX / CW29150R-ADJ / CW29151R-XX",
     productTitle: "Low-Dropout Regulators",
-    revision: "Rev. B"
+    revision: "Rev. B",
+    layoutMode: "two-column",
+    layoutDensity: "technical-dense"
   }
 };
 
@@ -81,6 +85,10 @@ beforeEach(() => {
   failNextDocumentSave = false;
   confirmMock = vi.fn(() => true);
   Object.defineProperty(window, "confirm", { value: confirmMock, configurable: true });
+  Object.defineProperty(window.HTMLElement.prototype, "getClientRects", { value: () => [{ bottom: 0, height: 0, left: 0, right: 0, top: 0, width: 0, x: 0, y: 0, toJSON: () => ({}) }], configurable: true });
+  Object.defineProperty(window.HTMLElement.prototype, "getBoundingClientRect", { value: () => ({ bottom: 0, height: 0, left: 0, right: 0, top: 0, width: 0, x: 0, y: 0, toJSON: () => ({}) }), configurable: true });
+  Object.defineProperty(window.Range.prototype, "getClientRects", { value: () => [{ bottom: 0, height: 0, left: 0, right: 0, top: 0, width: 0, x: 0, y: 0, toJSON: () => ({}) }], configurable: true });
+  Object.defineProperty(window.Range.prototype, "getBoundingClientRect", { value: () => ({ bottom: 0, height: 0, left: 0, right: 0, top: 0, width: 0, x: 0, y: 0, toJSON: () => ({}) }), configurable: true });
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -139,6 +147,12 @@ function clickButton(label: string) {
   button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 }
 
+function clickTool(label: string) {
+  const button = container.querySelector(`button[aria-label="${label}"]`) as HTMLButtonElement | null;
+  expect(button).not.toBeNull();
+  button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+}
+
 function jsonResponse(body: unknown, status: number) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
@@ -150,6 +164,24 @@ describe("DatasheetComposer", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/projects/project-1/datasheet/create", expect.objectContaining({ method: "POST" }));
     expect(container.textContent).toContain("Datasheet Editor");
   });
+  it("renders a Word-like editor workspace and grouped toolbar controls", async () => {
+    await createDatasheet();
+
+    const workspace = container.querySelector('[data-testid="editor-workspace"]');
+    const canvas = container.querySelector('[data-testid="editor-document-canvas"]');
+
+    expect(workspace?.className).toContain("bg-slate-200");
+    expect(canvas?.className).toContain("max-w-[794px]");
+    expect(canvas?.className).toContain("shadow-lg");
+    expect(container.textContent).toContain("Header/Footer Settings");
+    expect(container.textContent).toContain("Format");
+    expect(container.textContent).toContain("Lists");
+    expect(container.textContent).toContain("Table");
+    expect(container.textContent).toContain("Layout");
+    expect(container.textContent).toContain("Image");
+    expect(container.querySelector('button[aria-label="Bold"]')?.className).toContain("gap-1.5");
+  });
+
 
   it("saves the datasheet editor payload successfully", async () => {
     await createDatasheet();
@@ -239,9 +271,134 @@ describe("DatasheetComposer", () => {
     await act(async () => clickButton("Exports"));
     await flush();
 
-    expect(container.textContent).toContain("Save changes before export.");
+    expect(container.textContent).toContain("Save changes to update preview/export.");
     const exportButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Export PDF"));
     expect(exportButton).toHaveProperty("disabled", true);
+  });
+
+  it("renders the Paged Preview tab with zoom controls and the protected HTML preview route", async () => {
+    await createDatasheet();
+    await act(async () => clickButton("Paged Preview"));
+    await flush();
+
+    expect(container.textContent).toContain("Paged Preview");
+    expect(container.textContent).toContain("Saved datasheet rendered through the same A4 layout used for branded PDF export.");
+    expect(container.textContent).toContain("Preview uses saved content.");
+    expect(container.textContent).toContain("Fit width");
+    expect(container.textContent).toContain("75%");
+    expect(container.textContent).toContain("100%");
+    expect(container.textContent).toContain("Open in new tab");
+    const frame = container.querySelector('[data-testid="paged-preview-frame"]') as HTMLIFrameElement | null;
+    expect(frame?.getAttribute("src")).toContain("/api/projects/project-1/datasheet/export/preview");
+    expect(frame?.className).toContain("max-w-[980px]");
+
+    await act(async () => clickButton("75%"));
+    expect(frame?.className).toContain("w-[75%]");
+  });
+
+  it("shows the preview/export warning when paged preview has unsaved editor changes", async () => {
+    await createDatasheet();
+    const titleInput = Array.from(container.querySelectorAll("input")).find((input) => input.value === "Generic Datasheet");
+    expect(titleInput).toBeDefined();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      setter?.call(titleInput, "Changed title");
+      titleInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => clickButton("Paged Preview"));
+    await flush();
+
+    expect(container.textContent).toContain("Save changes to update preview/export.");
+  });
+
+  it("stores keep-with-next metadata in editorJson when saved", async () => {
+    await createDatasheet();
+    await act(async () => clickTool("Keep with next"));
+    await act(async () => clickButton("Save"));
+    await flush();
+
+    const saveCall = [...fetchMock.mock.calls].reverse().find((call) => String(call[0]).endsWith("/api/projects/project-1/datasheet") && (call[1] as RequestInit | undefined)?.method === "PATCH");
+    expect(saveCall).toBeDefined();
+    const body = JSON.parse(String((saveCall?.[1] as RequestInit).body));
+    expect(JSON.stringify(body.editorJson)).toContain('"keepWithNext":true');
+  });
+
+  it("stores an inserted page break in editorJson and shows its editor marker", async () => {
+    await createDatasheet();
+    await act(async () => clickTool("Insert page break"));
+    expect(container.textContent).toContain("Page Break");
+    await act(async () => clickButton("Save"));
+    await flush();
+
+    const saveCall = [...fetchMock.mock.calls].reverse().find((call) => String(call[0]).endsWith("/api/projects/project-1/datasheet") && (call[1] as RequestInit | undefined)?.method === "PATCH");
+    expect(saveCall).toBeDefined();
+    const body = JSON.parse(String((saveCall?.[1] as RequestInit).body));
+    expect(JSON.stringify(body.editorJson)).toContain('"type":"pageBreak"');
+  });
+
+  it("marks preview/export dirty when header/footer settings are edited", async () => {
+    await createDatasheet();
+    const websiteInput = Array.from(container.querySelectorAll("input")).find((input) => input.value === "www.velloresemicon.com");
+    expect(websiteInput).toBeDefined();
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      setter?.call(websiteInput, "docs.velloresemicon.com");
+      websiteInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.textContent).toContain("Unsaved header/footer changes");
+
+    await act(async () => clickButton("Paged Preview"));
+    await flush();
+    expect(container.textContent).toContain("Save changes to update preview/export.");
+  });
+
+  it("saves header/footer settings from the editor panel", async () => {
+    await createDatasheet();
+    const websiteInput = Array.from(container.querySelectorAll("input")).find((input) => input.value === "www.velloresemicon.com");
+    expect(websiteInput).toBeDefined();
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      setter?.call(websiteInput, "docs.velloresemicon.com");
+      websiteInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => clickButton("Save header/footer"));
+    await flush();
+
+    const templateCall = [...fetchMock.mock.calls].reverse().find((call) => String(call[0]).endsWith("/api/projects/project-1/datasheet/template") && (call[1] as RequestInit | undefined)?.method === "PATCH");
+    expect(templateCall).toBeDefined();
+    const body = JSON.parse(String((templateCall?.[1] as RequestInit).body));
+    expect(body.website).toBe("docs.velloresemicon.com");
+  });
+
+  it("shows and saves layout mode and density from the shared template settings panel", async () => {
+    await createDatasheet();
+    expect(container.textContent).toContain("Layout: Two-column technical datasheet. Density: Technical dense.");
+    await act(async () => clickButton("Paged Preview"));
+    expect(container.textContent).toContain("Current layout: Two-column technical datasheet. Density: Technical dense.");
+    await act(async () => clickButton("Datasheet Editor"));
+    const selects = Array.from(container.querySelectorAll("select")) as HTMLSelectElement[];
+    const layoutModeSelect = selects[0] ?? null;
+    const layoutDensitySelect = selects[1] ?? null;
+    expect(layoutModeSelect?.value).toBe("two-column");
+    expect(layoutDensitySelect?.value).toBe("technical-dense");
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")?.set;
+      setter?.call(layoutModeSelect, "single-column");
+      layoutModeSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+      setter?.call(layoutDensitySelect, "comfortable");
+      layoutDensitySelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container.textContent).toContain("Unsaved header/footer changes");
+    await act(async () => clickButton("Save header/footer"));
+    await flush();
+
+    const templateCall = [...fetchMock.mock.calls].reverse().find((call) => String(call[0]).endsWith("/api/projects/project-1/datasheet/template") && (call[1] as RequestInit | undefined)?.method === "PATCH");
+    const body = JSON.parse(String((templateCall?.[1] as RequestInit).body));
+    expect(body.layoutMode).toBe("single-column");
+    expect(body.layoutDensity).toBe("comfortable");
   });
 
   it("saves branding template fields", async () => {

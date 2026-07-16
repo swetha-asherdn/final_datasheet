@@ -43,6 +43,8 @@ export type SerializedDatasheetExport = {
     website: string;
     primaryColor: string;
     accentColor: string;
+    layoutMode?: string;
+    layoutDensity?: string;
   };
   downloadUrl: string | null;
 };
@@ -84,6 +86,8 @@ export async function createPdfExportForProject(params: {
       website: preparedSnapshot.template.website,
       primaryColor: preparedSnapshot.template.primaryColor,
       accentColor: preparedSnapshot.template.accentColor,
+      layoutMode: preparedSnapshot.template.layoutMode,
+      layoutDensity: preparedSnapshot.template.layoutDensity,
     },
   });
 
@@ -220,6 +224,8 @@ export function serializeExport(
       website: String(metadata.website ?? ""),
       primaryColor: String(metadata.primaryColor ?? ""),
       accentColor: String(metadata.accentColor ?? ""),
+      layoutMode: String(metadata.layoutMode ?? "two-column"),
+      layoutDensity: String(metadata.layoutDensity ?? "technical-dense"),
     },
     downloadUrl:
       status === "COMPLETED"
@@ -415,6 +421,8 @@ function createSnapshot(
         template.documentStatus ?? "Preliminary Datasheet",
       ),
       revision: String(template.revision ?? "Rev. A"),
+      layoutMode: template.layoutMode === "single-column" ? "single-column" : "two-column",
+      layoutDensity: template.layoutDensity === "comfortable" ? "comfortable" : "technical-dense",
       primaryColor: String(template.primaryColor ?? "#0D2B55"),
       accentColor: String(template.accentColor ?? "#D6533E"),
     } satisfies ExportTemplateSnapshot,

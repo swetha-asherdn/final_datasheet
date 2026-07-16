@@ -286,6 +286,8 @@ function serializeTemplate(template: Record<string, unknown>) {
     productTitle: String(template.productTitle ?? ""),
     documentStatus: String(template.documentStatus),
     revision: String(template.revision),
+    layoutMode: template.layoutMode === "single-column" ? "single-column" : "two-column",
+    layoutDensity: template.layoutDensity === "comfortable" ? "comfortable" : "technical-dense",
     pageSize: String(template.pageSize),
     orientation: String(template.orientation),
     primaryColor: String(template.primaryColor),
