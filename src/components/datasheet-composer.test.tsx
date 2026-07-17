@@ -1,4 +1,4 @@
-﻿/** @vitest-environment jsdom */
+/** @vitest-environment jsdom */
 
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -54,6 +54,57 @@ const completedExport = {
   downloadUrl: "/api/projects/project-1/datasheet/export/export1/download"
 };
 
+const experimentalLayout = {
+  id: "layout1",
+  projectId: "project-1",
+  datasheetDocumentId: "doc1",
+  exportMode: "saved",
+  templateSnapshot: {
+    logoAssetPath: "/branding/vellore-semicon-logo.svg",
+    companyName: "Vellore Semicon",
+    website: "www.velloresemicon.com",
+    productCode: "VS123",
+    productTitle: "Generic Datasheet",
+    documentStatus: "Preliminary Datasheet",
+    revision: "Rev. A",
+    layoutMode: "two-column",
+    layoutDensity: "technical-dense",
+    pageFillStrategy: "balanced",
+    primaryColor: "#0D2B55",
+    accentColor: "#D6533E"
+  },
+  pages: [{
+    pageNumber: 1,
+    usedHeight: 120,
+    bodyHeight: 264,
+    warnings: [],
+    blocks: [{
+      id: "page-1-block-1",
+      kind: "html",
+      blockType: "paragraph",
+      column: "left",
+      flowSlot: 0,
+      hiddenFromExport: false,
+      widthPreset: "medium",
+      keepWithCaption: false,
+      keepTogether: false,
+      allowSplit: true,
+      preventOrphanRows: false,
+      pageBreakBefore: false,
+      plainText: "Experimental layout body",
+      estimatedHeight: 24,
+      role: "paragraph",
+      html: "<p>Experimental layout body</p>",
+      fullWidth: false,
+      columnEligible: true
+    }]
+  }],
+  warnings: [],
+  lastGeneratedAt: "2026-07-13T10:00:00.000Z",
+  lastSavedAt: "2026-07-13T10:00:00.000Z",
+  updatedAt: "2026-07-13T10:00:00.000Z"
+};
+
 const regeneratedBundle = {
   ...initialBundle,
   document: {
@@ -98,6 +149,14 @@ beforeEach(() => {
     if (url.endsWith("/api/projects/project-1/datasheet/create")) return jsonResponse(initialBundle, 201);
     if (url.endsWith("/api/projects/project-1/datasheet/regenerate")) return jsonResponse(regeneratedBundle, 200);
     if (url.endsWith("/api/projects/project-1/datasheet/export") && !init?.method) return jsonResponse({ exports: [completedExport] }, 200);
+    if (url.endsWith("/api/projects/project-1/datasheet/layout") && !init?.method) return new Response(JSON.stringify({ error: { code: "DATASHEET_LAYOUT_NOT_FOUND" } }), { status: 404 });
+    if (url.endsWith("/api/projects/project-1/datasheet/layout/generate")) return jsonResponse(experimentalLayout, 201);
+    if (url.endsWith("/api/projects/project-1/datasheet/layout/reset")) return jsonResponse(experimentalLayout, 200);
+    if (url.endsWith("/api/projects/project-1/datasheet/layout") && init?.method === "PATCH") return jsonResponse(experimentalLayout, 200);
+    if (url.endsWith("/api/projects/project-1/datasheet/layout") && !init?.method) return new Response(JSON.stringify({ error: { code: "DATASHEET_LAYOUT_NOT_FOUND" } }), { status: 404 });
+    if (url.endsWith("/api/projects/project-1/datasheet/layout/generate")) return jsonResponse(experimentalLayout, 201);
+    if (url.endsWith("/api/projects/project-1/datasheet/layout/reset")) return jsonResponse(experimentalLayout, 200);
+    if (url.endsWith("/api/projects/project-1/datasheet/layout") && init?.method === "PATCH") return jsonResponse(experimentalLayout, 200);
     if (url.endsWith("/api/projects/project-1/datasheet/export/pdf")) return jsonResponse(completedExport, 201);
     if (url.endsWith("/api/projects/project-1/datasheet") && init?.method === "PATCH") {
       if (failNextDocumentSave) return jsonResponse({ error: { message: "Invalid request", code: "VALIDATION_ERROR" } }, 422);
@@ -164,11 +223,12 @@ describe("DatasheetComposer", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/projects/project-1/datasheet/create", expect.objectContaining({ method: "POST" }));
     expect(container.textContent).toContain("Datasheet Editor");
   });
-  it("renders a Word-like editor workspace and grouped toolbar controls", async () => {
+  it("renders a Word-like editor workspace and keeps advanced layout controls collapsed", async () => {
     await createDatasheet();
 
     const workspace = container.querySelector('[data-testid="editor-workspace"]');
     const canvas = container.querySelector('[data-testid="editor-document-canvas"]');
+    const advanced = container.querySelector('[data-testid="advanced-layout-controls"]') as HTMLDetailsElement | null;
 
     expect(workspace?.className).toContain("bg-slate-200");
     expect(canvas?.className).toContain("max-w-[794px]");
@@ -179,6 +239,8 @@ describe("DatasheetComposer", () => {
     expect(container.textContent).toContain("Table");
     expect(container.textContent).toContain("Layout");
     expect(container.textContent).toContain("Image");
+    expect(container.textContent).toContain("Advanced layout controls");
+    expect(advanced?.open).toBe(false);
     expect(container.querySelector('button[aria-label="Bold"]')?.className).toContain("gap-1.5");
   });
 
@@ -248,6 +310,8 @@ describe("DatasheetComposer", () => {
     await act(async () => clickButton("Exports"));
     await flush();
     expect(container.textContent).toContain("Branded PDF Export");
+    expect(container.textContent).toContain("Current export mode: Auto flow.");
+    expect(container.textContent).toContain("Current export mode: Auto flow.");
     expect(container.textContent).toContain("vellore-semicon-vs123-2026-07-13.pdf");
 
     const buttonsBefore = fetchMock.mock.calls.length;
@@ -276,6 +340,18 @@ describe("DatasheetComposer", () => {
     expect(exportButton).toHaveProperty("disabled", true);
   });
 
+  it("marks the saved layout editor experimental and keeps it collapsed by default", async () => {
+    await createDatasheet();
+    await act(async () => clickButton("Paged Layout Editor"));
+    await flush();
+
+    expect(container.textContent).toContain("Visual layout editor is experimental.");
+    expect(container.textContent).toContain("Auto Flow is still the recommended workflow");
+    const details = container.querySelector('[data-testid="experimental-saved-layout-editor"]') as HTMLDetailsElement | null;
+    expect(details).not.toBeNull();
+    expect(details?.open).toBe(false);
+  });
+
   it("renders the Paged Preview tab with zoom controls and the protected HTML preview route", async () => {
     await createDatasheet();
     await act(async () => clickButton("Paged Preview"));
@@ -283,7 +359,7 @@ describe("DatasheetComposer", () => {
 
     expect(container.textContent).toContain("Paged Preview");
     expect(container.textContent).toContain("Saved datasheet rendered through the same A4 layout used for branded PDF export.");
-    expect(container.textContent).toContain("Preview uses saved content.");
+    expect(container.textContent).toContain("Preview mode: Auto flow.");
     expect(container.textContent).toContain("Fit width");
     expect(container.textContent).toContain("75%");
     expect(container.textContent).toContain("100%");
@@ -410,3 +486,5 @@ describe("DatasheetComposer", () => {
     expect(container.textContent).toContain("Saved");
   });
 });
+
+

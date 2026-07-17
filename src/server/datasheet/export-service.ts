@@ -1,9 +1,10 @@
-import { readFile } from "node:fs/promises";
+﻿import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { Types } from "mongoose";
 import { AppError } from "@/lib/errors";
-import { editorJsonSchema, type TiptapJson } from "@/server/datasheet/schema";
+import { editorJsonSchema, type DatasheetLayoutExportMode, type TiptapJson } from "@/server/datasheet/schema";
 import { resolveChromiumExecutablePath } from "@/server/datasheet/chromium";
+import { resolveDatasheetLayoutRenderModel } from "@/server/datasheet/layout-service";
 import {
   buildExportPageModel,
   renderExportDocumentHtml,
@@ -18,6 +19,36 @@ import { getPrivateObject, uploadPrivateObject } from "@/server/storage/s3";
 
 type ExportRecord = Record<string, unknown>;
 
+type RenderedBlockMeasurement = {
+  blockId: string;
+  blockType: string;
+  blockClass: string;
+  estimatedHeight: number;
+  actualHeightPx: number;
+  visibleHeightPx: number;
+  offsetTopPx: number;
+  offsetBottomPx: number;
+};
+
+type RenderedPageMeasurement = {
+  pageNumber: number;
+  estimatedFillPercent: number;
+  estimatedUsedHeight: number;
+  bodyHeightPx: number;
+  contentUsedHeightPx: number;
+  remainingWhitespacePx: number;
+  actualFillPercent: number;
+  fillDifferencePercent: number;
+  figureBlocks: number;
+  visibleFigureBlocks: number;
+  tableBlocks: number;
+  blocks: RenderedBlockMeasurement[];
+};
+
+export type RenderedExportLayoutDiagnostics = {
+  pages: RenderedPageMeasurement[];
+  warnings: string[];
+};
 type PdfJsGetDocument = typeof import("pdfjs-dist/legacy/build/pdf.mjs").getDocument;
 type PdfJsDocumentInit = Parameters<PdfJsGetDocument>[0] & {
   disableWorker?: boolean;
@@ -45,6 +76,7 @@ export type SerializedDatasheetExport = {
     accentColor: string;
     layoutMode?: string;
     layoutDensity?: string;
+    pageFillStrategy?: string;
   };
   downloadUrl: string | null;
 };
@@ -52,6 +84,7 @@ export type SerializedDatasheetExport = {
 export async function createPdfExportForProject(params: {
   projectId: string;
   ownerId: string;
+  preferredMode?: DatasheetLayoutExportMode;
 }) {
   const ids = parseOwnerProjectIds(params);
   const project = await ProjectModel.findOne({
@@ -65,9 +98,19 @@ export async function createPdfExportForProject(params: {
   }
 
   const preparedSnapshot = await buildPreparedSnapshotForProject(params, ids);
-  const pageModel = buildExportPageModel(preparedSnapshot);
+  const renderSelection = await resolveDatasheetLayoutRenderModel({ projectId: params.projectId, ownerId: params.ownerId, preferredMode: params.preferredMode });
+  const pageModel = renderSelection.mode === "saved"
+    ? renderSelection.pageModel
+    : buildExportPageModel(preparedSnapshot);
+  const activeTemplate = renderSelection.mode === "saved"
+    ? { ...preparedSnapshot.template, ...renderSelection.template }
+    : preparedSnapshot.template;
+  logExportRenderDebug("pdf", params, renderSelection.mode, pageModel, {
+    savedLayoutExists: Boolean(renderSelection.savedLayout),
+    preferredMode: params.preferredMode,
+  });
   const filename = buildExportFilename(
-    preparedSnapshot.template.productCode ||
+    activeTemplate.productCode ||
       preparedSnapshot.document.title ||
       String(project.name ?? "datasheet"),
   );
@@ -79,15 +122,16 @@ export async function createPdfExportForProject(params: {
     status: "PENDING",
     filename,
     metadata: {
-      productCode: preparedSnapshot.template.productCode,
-      productTitle: preparedSnapshot.template.productTitle,
-      documentStatus: preparedSnapshot.template.documentStatus,
-      revision: preparedSnapshot.template.revision,
-      website: preparedSnapshot.template.website,
-      primaryColor: preparedSnapshot.template.primaryColor,
-      accentColor: preparedSnapshot.template.accentColor,
-      layoutMode: preparedSnapshot.template.layoutMode,
-      layoutDensity: preparedSnapshot.template.layoutDensity,
+      productCode: activeTemplate.productCode,
+      productTitle: activeTemplate.productTitle,
+      documentStatus: activeTemplate.documentStatus,
+      revision: activeTemplate.revision,
+      website: activeTemplate.website,
+      primaryColor: activeTemplate.primaryColor,
+      accentColor: activeTemplate.accentColor,
+      layoutMode: activeTemplate.layoutMode,
+      layoutDensity: activeTemplate.layoutDensity,
+      pageFillStrategy: activeTemplate.pageFillStrategy,
     },
   });
 
@@ -95,7 +139,7 @@ export async function createPdfExportForProject(params: {
     exportRecord.status = "PROCESSING";
     await exportRecord.save();
 
-    const html = renderExportDocumentHtml(pageModel, preparedSnapshot.template, {
+    const html = renderExportDocumentHtml(pageModel, activeTemplate, {
       mode: "pdf",
     });
     const pdf = await renderHtmlToPdf(html);
@@ -192,10 +236,46 @@ export async function getPdfExportDownloadForProject(params: {
 export async function getPdfExportHtmlPreviewForProject(params: {
   projectId: string;
   ownerId: string;
+  preferredMode?: DatasheetLayoutExportMode;
 }) {
   const snapshot = await buildPreparedSnapshotForProject(params);
-  const pageModel = buildExportPageModel(snapshot);
-  return renderExportDocumentHtml(pageModel, snapshot.template, { mode: "preview" });
+  const renderSelection = await resolveDatasheetLayoutRenderModel({ projectId: params.projectId, ownerId: params.ownerId, preferredMode: params.preferredMode });
+  const pageModel = renderSelection.mode === "saved"
+    ? renderSelection.pageModel
+    : buildExportPageModel(snapshot);
+  const template = renderSelection.mode === "saved"
+    ? { ...snapshot.template, ...renderSelection.template }
+    : snapshot.template;
+  logExportRenderDebug("preview", params, renderSelection.mode, pageModel, {
+    savedLayoutExists: Boolean(renderSelection.savedLayout),
+    preferredMode: params.preferredMode,
+  });
+  return renderExportDocumentHtml(pageModel, template, { mode: "preview" });
+}
+
+function logExportRenderDebug(
+  context: "preview" | "pdf",
+  params: { projectId: string; ownerId: string; preferredMode?: DatasheetLayoutExportMode },
+  resolvedMode: DatasheetLayoutExportMode,
+  pageModel: { pages: Array<{ usedHeight: number; blocks: Array<{ kind: string; role?: string }> }> },
+  extras: { savedLayoutExists: boolean; preferredMode?: DatasheetLayoutExportMode },
+) {
+  if (process.env.DEBUG_EXPORT_LAYOUT !== "1") return;
+  console.info("[datasheet-export] PHASE_7B_FILL_FORWARD_ACTIVE", {
+    context,
+    projectId: params.projectId,
+    preferredMode: extras.preferredMode ?? "default-auto",
+    resolvedMode,
+    savedLayoutExists: extras.savedLayoutExists,
+    pageCount: pageModel.pages.length,
+    pageFill: pageModel.pages.map((page, index) => ({
+      pageNumber: index + 1,
+      usedHeight: page.usedHeight,
+      blockCount: page.blocks.length,
+      figureCount: page.blocks.filter((block) => block.kind === "html" && (block.role === "figure" || block.role === "image")).length,
+      tableCount: page.blocks.filter((block) => block.kind === "table").length,
+    })),
+  });
 }
 
 export function serializeExport(
@@ -226,6 +306,7 @@ export function serializeExport(
       accentColor: String(metadata.accentColor ?? ""),
       layoutMode: String(metadata.layoutMode ?? "two-column"),
       layoutDensity: String(metadata.layoutDensity ?? "technical-dense"),
+      pageFillStrategy: String(metadata.pageFillStrategy ?? "balanced"),
     },
     downloadUrl:
       status === "COMPLETED"
@@ -343,6 +424,10 @@ export async function renderHtmlToPdf(html: string) {
     await page.setContent(html, { waitUntil: "load" });
     await page.waitForNetworkIdle({ idleTime: 500, timeout: 5000 }).catch(() => undefined);
     await page.emulateMediaType("print");
+    if (process.env.DEBUG_EXPORT_LAYOUT === "1") {
+      const diagnostics = await measureRenderedExportLayout(page as { evaluate: <T>(pageFunction: () => T | Promise<T>) => Promise<T> });
+      logRenderedExportLayoutDiagnostics(diagnostics);
+    }
     return Buffer.from(
       await page.pdf({
         format: "A4",
@@ -355,6 +440,140 @@ export async function renderHtmlToPdf(html: string) {
     );
   } finally {
     await browser.close();
+  }
+}
+
+export async function measureRenderedExportHtmlLayout(html: string) {
+  const { default: puppeteer } = await import("puppeteer-core");
+  const browser = await puppeteer.launch({
+    executablePath: resolveChromiumExecutablePath(),
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+    ],
+    headless: true,
+  });
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1240, height: 1754, deviceScaleFactor: 1 });
+    await page.setContent(html, { waitUntil: "load" });
+    await page.waitForNetworkIdle({ idleTime: 500, timeout: 5000 }).catch(() => undefined);
+    await page.emulateMediaType("print");
+    return await measureRenderedExportLayout(page as { evaluate: <T>(pageFunction: () => T | Promise<T>) => Promise<T> });
+  } finally {
+    await browser.close();
+  }
+}
+
+async function measureRenderedExportLayout(page: { evaluate: <T>(pageFunction: () => T | Promise<T>) => Promise<T> }): Promise<RenderedExportLayoutDiagnostics> {
+  return await page.evaluate(() => {
+    const pageElements = Array.from(document.querySelectorAll<HTMLElement>(".pdf-page"));
+    const pages = pageElements.map((pageElement) => {
+      const body = pageElement.querySelector<HTMLElement>(".pdf-body");
+      if (!body) {
+        return {
+          pageNumber: Number(pageElement.dataset.pageNumber || 0),
+          estimatedFillPercent: Number(pageElement.dataset.estimatedFill || 0) * 100,
+          estimatedUsedHeight: Number(pageElement.dataset.estimatedUsedHeight || 0),
+          bodyHeightPx: 0,
+          contentUsedHeightPx: 0,
+          remainingWhitespacePx: 0,
+          actualFillPercent: 0,
+          fillDifferencePercent: 0,
+          figureBlocks: 0,
+          visibleFigureBlocks: 0,
+          tableBlocks: 0,
+          blocks: [],
+        };
+      }
+
+      const bodyRect = body.getBoundingClientRect();
+      const blocks = Array.from(body.querySelectorAll<HTMLElement>("[data-block-id]"))
+        .map((block) => {
+          const rect = block.getBoundingClientRect();
+          const visibleTop = Math.max(rect.top, bodyRect.top);
+          const visibleBottom = Math.min(rect.bottom, bodyRect.bottom);
+          const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+          return {
+            blockId: block.dataset.blockId || "",
+            blockType: block.dataset.blockType || "",
+            blockClass: block.dataset.blockClass || "",
+            estimatedHeight: Number(block.dataset.estimatedHeight || 0),
+            actualHeightPx: Number(rect.height.toFixed(2)),
+            visibleHeightPx: Number(visibleHeight.toFixed(2)),
+            offsetTopPx: Number((rect.top - bodyRect.top).toFixed(2)),
+            offsetBottomPx: Number((rect.bottom - bodyRect.top).toFixed(2)),
+          };
+        });
+
+      const visibleBlocks = blocks.filter((block) => block.visibleHeightPx > 0.5);
+      const contentUsedHeightPx = visibleBlocks.length > 0
+        ? Math.max(...visibleBlocks.map((block) => Math.min(block.offsetBottomPx, bodyRect.height)))
+        : 0;
+      const actualFillPercent = bodyRect.height > 0 ? (contentUsedHeightPx / bodyRect.height) * 100 : 0;
+      const estimatedFillPercent = Number(body.dataset.estimatedFill || pageElement.dataset.estimatedFill || 0) * 100;
+      const figureBlocks = blocks.filter((block) => block.blockType === "figure" || block.blockType === "image");
+      const visibleFigureBlocks = figureBlocks.filter((block) => block.visibleHeightPx > 6);
+      const tableBlocks = blocks.filter((block) => block.blockType === "table");
+
+      return {
+        pageNumber: Number(pageElement.dataset.pageNumber || 0),
+        estimatedFillPercent: Number(estimatedFillPercent.toFixed(2)),
+        estimatedUsedHeight: Number(body.dataset.estimatedUsedHeight || pageElement.dataset.estimatedUsedHeight || 0),
+        bodyHeightPx: Number(bodyRect.height.toFixed(2)),
+        contentUsedHeightPx: Number(contentUsedHeightPx.toFixed(2)),
+        remainingWhitespacePx: Number(Math.max(bodyRect.height - contentUsedHeightPx, 0).toFixed(2)),
+        actualFillPercent: Number(actualFillPercent.toFixed(2)),
+        fillDifferencePercent: Number((actualFillPercent - estimatedFillPercent).toFixed(2)),
+        figureBlocks: figureBlocks.length,
+        visibleFigureBlocks: visibleFigureBlocks.length,
+        tableBlocks: tableBlocks.length,
+        blocks,
+      };
+    });
+
+    const warnings: string[] = [];
+    pages.forEach((page, index) => {
+      if (Math.abs(page.fillDifferencePercent) > 15) {
+        warnings.push(`Page ${page.pageNumber} estimated fill differs from actual by ${page.fillDifferencePercent.toFixed(2)}%`);
+      }
+      const isMiddlePage = index > 0 && index < pages.length - 1;
+      if (isMiddlePage && page.actualFillPercent < 70) {
+        warnings.push(`Page ${page.pageNumber} actual fill is only ${page.actualFillPercent.toFixed(2)}%`);
+      }
+      if (page.figureBlocks > 0 && page.visibleFigureBlocks === 0) {
+        warnings.push(`Page ${page.pageNumber} contains figure blocks in the model but none are visibly rendered inside the page body`);
+      }
+    });
+
+    return { pages, warnings };
+  });
+}
+
+function logRenderedExportLayoutDiagnostics(diagnostics: RenderedExportLayoutDiagnostics) {
+  console.info("[datasheet-export] actual-layout", diagnostics.pages.map((page) => ({
+    pageNumber: page.pageNumber,
+    estimatedFillPercent: page.estimatedFillPercent,
+    actualFillPercent: page.actualFillPercent,
+    fillDifferencePercent: page.fillDifferencePercent,
+    bodyHeightPx: page.bodyHeightPx,
+    contentUsedHeightPx: page.contentUsedHeightPx,
+    remainingWhitespacePx: page.remainingWhitespacePx,
+    figureBlocks: page.figureBlocks,
+    visibleFigureBlocks: page.visibleFigureBlocks,
+    tableBlocks: page.tableBlocks,
+    mismatchBlocks: page.blocks
+      .map((block) => ({
+        ...block,
+        heightDeltaPx: Number((block.actualHeightPx - block.estimatedHeight).toFixed(2)),
+      }))
+      .sort((left, right) => Math.abs(right.heightDeltaPx) - Math.abs(left.heightDeltaPx))
+      .slice(0, 6),
+  })));
+
+  for (const warning of diagnostics.warnings) {
+    console.warn("[datasheet-export] layout-warning", warning);
   }
 }
 
@@ -423,6 +642,7 @@ function createSnapshot(
       revision: String(template.revision ?? "Rev. A"),
       layoutMode: template.layoutMode === "single-column" ? "single-column" : "two-column",
       layoutDensity: template.layoutDensity === "comfortable" ? "comfortable" : "technical-dense",
+      pageFillStrategy: template.pageFillStrategy === "safe" ? "safe" : template.pageFillStrategy === "aggressive" ? "aggressive" : "balanced",
       primaryColor: String(template.primaryColor ?? "#0D2B55"),
       accentColor: String(template.accentColor ?? "#D6533E"),
     } satisfies ExportTemplateSnapshot,
@@ -479,3 +699,7 @@ async function streamToDataUri(
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
+
+
+
+

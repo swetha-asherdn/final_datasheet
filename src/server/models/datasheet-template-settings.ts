@@ -14,6 +14,7 @@ const datasheetTemplateSettingsSchema = new Schema(
     revision: { type: String, required: true, default: "Rev. A" },
     layoutMode: { type: String, enum: ["two-column", "single-column"], required: true, default: "two-column" },
     layoutDensity: { type: String, enum: ["comfortable", "technical-dense"], required: true, default: "technical-dense" },
+    pageFillStrategy: { type: String, enum: ["safe", "balanced", "aggressive"], required: true, default: "balanced" },
     pageSize: { type: String, enum: ["A4"], required: true, default: "A4" },
     orientation: { type: String, enum: ["portrait", "landscape"], required: true, default: "portrait" },
     primaryColor: { type: String, required: true, default: "#0D2B55" },

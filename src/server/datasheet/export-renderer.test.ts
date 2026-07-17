@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from "vitest";
+﻿import { describe, expect, it, vi } from "vitest";
 import {
   buildExportPageModel,
   paginateExportBlocks,
@@ -20,6 +20,7 @@ const template: ExportTemplateSnapshot = {
   revision: "Rev. A",
   layoutMode: "two-column",
   layoutDensity: "technical-dense",
+  pageFillStrategy: "balanced",
   primaryColor: "#0D2B55",
   accentColor: "#D6533E",
 };
@@ -541,10 +542,10 @@ describe("export renderer", () => {
     expect(html).toContain("layout-two-column");
     expect(html).toContain("layout-density-technical-dense");
     expect(html).toContain("technical-columns-flow");
-    expect(html).toContain("column-gap: 3.8mm;");
-    expect(html).toContain("font-size: 7.55pt;");
-    expect(html).toContain("line-height: 1.18;");
-    expect(html).toContain("table-block full-width-block");
+    expect(html).toContain(".pdf-body.layout-two-column.layout-density-technical-dense .technical-columns-flow { gap: 3.2mm; }");
+    expect(html).toContain("font-size: 7.35pt;");
+    expect(html).toContain("line-height: 1.14;");
+    expect(html).toContain("class=\"page-body-block table-block\"");
     expect(html).toContain("figure-image");
   });
 
@@ -588,6 +589,58 @@ describe("export renderer", () => {
     expect(html).toContain("≥ 1A");
     expect(html).toContain("V<sub>OUT</sub>");
     expect(html).toContain("I<sub>OUT</sub>");
+  });
+
+  it("uses a less conservative dense table height estimate than comfortable mode", () => {
+    const nodes = [{
+      type: "table",
+      content: [
+        { type: "tableRow", content: [{ type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Parameter" }] }] }, { type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Value" }] }] }] },
+        { type: "tableRow", content: [{ type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "Output current limit over line and load regulation test case" }] }] }, { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "1.5A" }] }] }] },
+        { type: "tableRow", content: [{ type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "Dropout voltage at 500mA and 1A load conditions" }] }] }, { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "250mV" }] }] }] },
+      ],
+    }];
+
+    const denseBlocks = renderTiptapNodesToExportBlocks(nodes, { layoutMode: "two-column", layoutDensity: "technical-dense" });
+    const comfortableBlocks = renderTiptapNodesToExportBlocks(nodes, { layoutMode: "two-column", layoutDensity: "comfortable" });
+    const denseTable = denseBlocks.find((block) => block.kind === "table");
+    const comfortableTable = comfortableBlocks.find((block) => block.kind === "table");
+
+    expect(denseTable && denseTable.kind === "table" ? denseTable.estimatedHeight : 0).toBeLessThan(
+      comfortableTable && comfortableTable.kind === "table" ? comfortableTable.estimatedHeight : 0,
+    );
+  });
+
+  it("keeps a small dense table and following paragraph on the same page when space remains", () => {
+    const intro = { type: "paragraph", content: [{ type: "text", text: "Dense introduction paragraph. ".repeat(18) }] };
+    const pageModel = buildExportPageModel({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: {
+          type: "doc",
+          content: [
+            intro,
+            intro,
+            {
+              type: "table",
+              content: [
+                { type: "tableRow", content: [{ type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Parameter" }] }] }, { type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Value" }] }] }] },
+                { type: "tableRow", content: [{ type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "Current limit" }] }] }, { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "1.5A" }] }] }] },
+                { type: "tableRow", content: [{ type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "Dropout voltage" }] }] }, { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "250mV" }] }] }] },
+              ],
+            },
+            { type: "paragraph", content: [{ type: "text", text: "Follow-on application guidance should remain on the same page when there is still safe space below the table." }] },
+          ],
+        },
+      },
+    });
+
+    expect(pageModel.pages).toHaveLength(1);
+    expect(pageModel.pages[0]?.blocks.some((block) => block.kind === "table")).toBe(true);
+    expect(pageModel.pages[0]?.blocks.some((block) => block.kind === "html" && block.role === "paragraph" && block.plainText?.includes("Follow-on application guidance"))).toBe(true);
   });
 
   it("escapes dangerous HTML and scripts from editor content", () => {
@@ -661,7 +714,338 @@ describe("export renderer", () => {
     expect(pageModel.pages).toHaveLength(1);
     expect(pageModel.pages[0]?.blocks.some((block) => block.kind === "html" && block.role === "figure" && block.columnEligible)).toBe(true);
   });
+
+  it("normalizes dirty editor content before export pagination", () => {
+    const blocks = renderTiptapNodesToExportBlocks([
+      { type: "paragraph", content: [{ type: "text", text: "   " }] },
+      { type: "paragraph", content: [{ type: "text", text: "Image from source page 2" }] },
+      { type: "paragraph", attrs: { class: "image-caption" }, content: [{ type: "text", text: "Figure 1. Typical application" }] },
+      { type: "paragraph", attrs: { class: "image-caption" }, content: [{ type: "text", text: "Figure 1. Typical application" }] },
+      { type: "paragraph", content: [{ type: "text", text: "Useful application text" }] },
+    ]);
+
+    expect(blocks.some((block) => block.kind === "html" && block.plainText?.includes("Image from source page"))).toBe(false);
+    expect(blocks.filter((block) => block.kind === "html" && block.role === "caption")).toHaveLength(1);
+    expect(blocks.some((block) => block.kind === "html" && block.plainText === "Useful application text")).toBe(true);
+  });
+
+  it("compacts loose feature and application paragraphs into export-only lists", () => {
+    const blocks = renderTiptapNodesToExportBlocks([
+      { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "FEATURES" }] },
+      { type: "paragraph", content: [{ type: "text", text: "Low dropout voltage" }] },
+      { type: "paragraph", content: [{ type: "text", text: "Fast transient response" }] },
+      { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "APPLICATIONS" }] },
+      { type: "paragraph", content: [{ type: "text", text: "Post regulators" }] },
+      { type: "paragraph", content: [{ type: "text", text: "Battery-powered systems" }] },
+    ]);
+
+    const lists = blocks.filter((block) => block.kind === "html" && block.role === "list");
+    expect(lists).toHaveLength(2);
+    expect(lists[0] && "html" in lists[0] ? lists[0].html : "").toContain("<li>Low dropout voltage</li>");
+    expect(blocks.filter((block) => block.kind === "html" && block.role === "paragraph")).toHaveLength(0);
+  });
+
+  it("normalizes technical symbols inside table cells without changing normal English words", () => {
+    const html = renderDatasheetExportHtml({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: {
+          type: "doc",
+          content: [{
+            type: "table",
+            content: [
+              { type: "tableRow", content: [{ type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Parameter" }] }] }, { type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Value" }] }] }] },
+              { type: "tableRow", content: [{ type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "V OUT <= 5V minimum maximum aluminum" }] }] }, { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "10 Âµ F and 20 Âµ A" }] }] }] },
+            ],
+          }],
+        },
+      },
+    }, { mode: "pdf" });
+
+    expect(html).toContain("V<sub>OUT</sub>");
+    expect(html).toContain("≤ 5V");
+    expect(html).toContain("10µF");
+    expect(html).toContain("20µA");
+    expect(html).toContain("minimum maximum aluminum");
+  });
+
+  it("classifies small figures so pin and typical application artwork can appear earlier", () => {
+    const pageModel = buildExportPageModel({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: {
+          type: "doc",
+          content: [
+            { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "TYPICAL APPLICATION" }] },
+            { type: "paragraph", content: [{ type: "text", text: "A compact application schematic is shown below." }] },
+            { type: "image", attrs: { src: "data:image/png;base64,typical", alt: "Typical application schematic", width: 520, height: 360, imageKey: "typical-app", displaySize: "small" } },
+            { type: "paragraph", attrs: { class: "image-caption" }, content: [{ type: "text", text: "Figure 1. Typical application" }] },
+          ],
+        },
+      },
+    });
+
+    expect(pageModel.pages).toHaveLength(1);
+    expect(pageModel.pages[0]?.blocks.some((block) => block.kind === "html" && block.role === "figure" && block.blockClass === "small-figure" && block.columnEligible)).toBe(true);
+  });
+
+  it("uses page fill scoring to pull compatible content after a table fragment without crossing manual breaks", () => {
+    const blocks = renderTiptapNodesToExportBlocks([
+      {
+        type: "table",
+        content: [
+          { type: "tableRow", content: [{ type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Parameter" }] }] }, { type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Value" }] }] }] },
+          { type: "tableRow", content: [{ type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "Current limit" }] }] }, { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "1.5A" }] }] }] },
+          { type: "tableRow", content: [{ type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "Dropout voltage" }] }] }, { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "250mV" }] }] }] },
+        ],
+      },
+      { type: "paragraph", content: [{ type: "text", text: "Compatible follow-on text can backfill the same page." }] },
+    ]);
+    const pages = paginateExportBlocks(blocks, 42);
+    const modelPages = buildExportPageModel({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: { type: "doc", content: [
+          { type: "paragraph", content: [{ type: "text", text: "Intro" }] },
+          { type: "pageBreak" },
+          { type: "paragraph", content: [{ type: "text", text: "After break" }] },
+        ] },
+      },
+    }).pages;
+
+    expect(pages).toHaveLength(1);
+    expect(pages[0]?.blocks.some((block) => block.kind === "table")).toBe(true);
+    expect(pages[0]?.blocks.some((block) => block.kind === "html" && block.role === "paragraph")).toBe(true);
+    expect(modelPages).toHaveLength(2);
+  });
+
+  it("keeps comfortable and single-column modes compatible with export cleanup", () => {
+    const comfortable = renderDatasheetExportHtml({
+      template: { ...template, layoutDensity: "comfortable" },
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Image from source page 5" }] }, { type: "paragraph", content: [{ type: "text", text: "Comfortable real body" }] }] },
+      },
+    }, { mode: "pdf" });
+    const singleColumn = renderDatasheetExportHtml({
+      template: { ...template, layoutMode: "single-column" },
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Single-column body" }] }] },
+      },
+    }, { mode: "pdf" });
+
+    expect(comfortable).toContain('layout-density-comfortable');
+    expect(comfortable).not.toContain("Image from source page 5");
+    expect(singleColumn).toContain("layout-single-column");
+    expect(singleColumn).not.toContain('<section class="page-body-block technical-columns">');
+  });
+
+  it("recovers compact bullets from a merged FEATURES paragraph", () => {
+    const blocks = renderTiptapNodesToExportBlocks([
+      { type: "paragraph", content: [{ type: "text", text: "FEATURES High Current Capability 1.5A Low-Dropout Voltage 450mV Low Ground Current Accurate 1% Guaranteed Tolerance Extremely Fast Transient Response Reverse-battery and Load Dump Protection Zero-Current Shutdown Mode" }] },
+    ]);
+
+    const heading = blocks.find((block) => block.kind === "html" && block.role === "heading");
+    const list = blocks.find((block) => block.kind === "html" && block.role === "list");
+
+    expect(heading && "html" in heading ? heading.html : "").toContain("FEATURES");
+    expect(list && "html" in list ? list.html : "").toContain("<li>High Current Capability 1.5A</li>");
+    expect(list && "html" in list ? list.html : "").toContain("<li>Low-Dropout Voltage 450mV</li>");
+    expect(list && "html" in list ? list.html : "").toContain("<li>Low Ground Current</li>");
+    expect(blocks.filter((block) => block.kind === "html" && block.role === "paragraph")).toHaveLength(0);
+  });
+
+  it("prints page-fill debug decisions with rejection reasons in development", () => {
+    const previousDebug = process.env.DEBUG_EXPORT_LAYOUT;
+    process.env.DEBUG_EXPORT_LAYOUT = "1";
+    const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    try {
+      buildExportPageModel({
+        template,
+        document: {
+          title: "Low-Dropout Regulators",
+          productCode: template.productCode,
+          productCategory: template.productTitle,
+          editorJson: {
+            type: "doc",
+            content: [
+              { type: "paragraph", content: [{ type: "text", text: "Dense paragraph ".repeat(160) }] },
+              { type: "table", content: [
+                { type: "tableRow", content: [{ type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Parameter" }] }] }, { type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Value" }] }] }] },
+                ...Array.from({ length: 10 }, (_, index) => ({ type: "tableRow", content: [{ type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: `Parameter ${index + 1}` }] }] }, { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: `${index + 1}.0V` }] }] }] })),
+              ] },
+            ],
+          },
+        },
+      });
+      expect(spy).toHaveBeenCalledWith("[export-layout]", expect.arrayContaining([
+        expect.objectContaining({ remainingHeight: expect.any(Number), blocksPlaced: expect.any(Array), finalizedBecause: expect.any(String) }),
+      ]));
+      const report = spy.mock.calls[0]?.[1] as Array<Record<string, unknown>>;
+      expect(JSON.stringify(report)).toContain("nextBlockReason");
+    } finally {
+      process.env.DEBUG_EXPORT_LAYOUT = previousDebug;
+      spy.mockRestore();
+    }
+  });
+
+  it("splits a leading table fragment to backfill sparse technical-dense pages", () => {
+    const filler = { type: "paragraph", content: [{ type: "text", text: "Dense regulator description with operating notes. ".repeat(55) }] };
+    const table = {
+      type: "table",
+      content: [
+        { type: "tableRow", content: [{ type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Parameter" }] }] }, { type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Value" }] }] }] },
+        ...Array.from({ length: 34 }, (_, index) => ({
+          type: "tableRow",
+          content: [
+            { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: `Electrical characteristic row ${index + 1} with line regulation load regulation dropout voltage and output current limit condition` }] }] },
+            { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: `${index + 1}.25V` }] }] },
+          ],
+        })),
+      ],
+    };
+    const pageModel = buildExportPageModel({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: { type: "doc", content: [filler, table, { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "APPLICATION INFORMATION" }] }, { type: "paragraph", content: [{ type: "text", text: "Follow-on text should begin after a table fragment when space is available." }] }] },
+      },
+    });
+
+    const pagesWithTables = pageModel.pages.filter((page) => page.blocks.some((block) => block.kind === "table"));
+    expect(pagesWithTables.length).toBeGreaterThan(1);
+    expect(pageModel.pages.slice(0, -1).some((page) => page.blocks.some((block) => block.kind === "table") && page.usedHeight >= 0.7 * 264)).toBe(true);
+  });
+
+  it("pulls a medium column figure forward when a sparse page has room", () => {
+    const pageModel = buildExportPageModel({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: {
+          type: "doc",
+          content: [
+            { type: "paragraph", content: [{ type: "text", text: "Dense introductory operating description. ".repeat(82) }] },
+            { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "TYPICAL APPLICATION" }] },
+            { type: "image", attrs: { src: "data:image/png;base64,medium", alt: "Fixed-output typical application", width: 700, height: 460, imageKey: "fixed-output", displaySize: "medium" } },
+            { type: "paragraph", attrs: { class: "image-caption" }, content: [{ type: "text", text: "Figure 2. Fixed-output regulator" }] },
+          ],
+        },
+      },
+    });
+
+    expect(pageModel.pages.slice(0, 2).some((page) => page.blocks.some((block) => block.kind === "html" && block.role === "figure" && block.columnEligible))).toBe(true);
+  });
+
+  it("renders recovered FEATURES and APPLICATIONS as visible compact bullet lists", () => {
+    const html = renderDatasheetExportHtml({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: {
+          type: "doc",
+          content: [
+            { type: "paragraph", content: [{ type: "text", text: "FEATURES High Current Capability 1.5A Low-Dropout Voltage 450mV Low Ground Current" }] },
+            { type: "paragraph", content: [{ type: "text", text: "APPLICATIONS Battery-powered systems Post regulators Industrial supplies" }] },
+          ],
+        },
+      },
+    }, { mode: "pdf" });
+
+    expect(html).toContain("<h2>FEATURES</h2>");
+    expect(html).toContain("<ul>");
+    expect(html).toContain("<li>High Current Capability 1.5A</li>");
+    expect(html).toContain("<h2>APPLICATIONS</h2>");
+    expect(html).toContain("<li>Battery-powered systems</li>");
+  });
+  it("splits an oversized paragraph across pages in fill-forward mode", () => {
+    const blocks = renderTiptapNodesToExportBlocks([
+      { type: "paragraph", content: [{ type: "text", text: "Dense technical paragraph with regulator behavior and operating notes. ".repeat(90) }] },
+    ]);
+
+    const pages = paginateExportBlocks(blocks, 42);
+
+    expect(pages.length).toBeGreaterThan(1);
+    expect(pages.every((page) => page.usedHeight <= 42)).toBe(true);
+    expect(pages.every((page) => page.blocks.some((block) => block.kind === "html" && block.role === "paragraph"))).toBe(true);
+  });
+
+  it("splits long bullet lists by item while preserving list blocks", () => {
+    const blocks = renderTiptapNodesToExportBlocks([
+      { type: "bulletList", content: Array.from({ length: 9 }, (_, index) => ({ type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: `Feature item ${index + 1} with compact technical wording` }] }] })) },
+    ]);
+
+    const pages = paginateExportBlocks(blocks, 24);
+
+    expect(pages.length).toBeGreaterThan(1);
+    expect(pages.every((page) => page.blocks.some((block) => block.kind === "html" && block.role === "list"))).toBe(true);
+  });
+
+  it("prevents a final one-row table fragment when splitting fill-forward pages", () => {
+    const blocks = renderTiptapNodesToExportBlocks([
+      {
+        type: "table",
+        content: [
+          { type: "tableRow", content: [{ type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Parameter" }] }] }, { type: "tableHeader", content: [{ type: "paragraph", content: [{ type: "text", text: "Value" }] }] }] },
+          ...Array.from({ length: 10 }, (_, index) => ({ type: "tableRow", content: [{ type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: `Electrical characteristic row ${index + 1} with dropout voltage line regulation and current limit notes` }] }] }, { type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: `${index + 1}.0V` }] }] }] })),
+        ],
+      },
+    ]);
+
+    const pages = paginateExportBlocks(blocks, 44);
+    const lastTable = pages.at(-1)?.blocks.find((block) => block.kind === "table");
+
+    expect(pages.length).toBeGreaterThan(1);
+    expect(lastTable && lastTable.kind === "table" ? lastTable.rowHtml.length : 0).toBeGreaterThan(1);
+  });
+
+  it("keeps adjustable regulator, error flag, and enable input sections separate", () => {
+    const blocks = renderTiptapNodesToExportBlocks([
+      { type: "paragraph", content: [{ type: "text", text: "ADJUSTABLE REGULATOR DESIGN Figure 3 shows the resistor divider and where VOUT is the desired output voltage." }] },
+      { type: "paragraph", content: [{ type: "text", text: "ERROR FLAG The error flag output pulls low when the regulator falls out of regulation." }] },
+      { type: "paragraph", content: [{ type: "text", text: "ENABLE INPUT The enable input turns the regulator on and off without disturbing the error flag section." }] },
+      { type: "paragraph", content: [{ type: "text", text: "BLOCK DIAGRAM Internal control blocks are shown below." }] },
+    ]);
+
+    const headings = blocks.filter((block) => block.kind === "html" && block.role === "heading").map((block) => block.kind === "html" ? block.plainText : "");
+
+    expect(headings).toContain("ADJUSTABLE REGULATOR DESIGN");
+    expect(headings).toContain("ERROR FLAG");
+    expect(headings).toContain("ENABLE INPUT");
+    expect(headings).toContain("BLOCK DIAGRAM");
+  });
+
 });
+
+
+
+
+
+
+
+
+
 
 
 

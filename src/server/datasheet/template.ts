@@ -10,6 +10,7 @@ export type DatasheetTemplateDefaults = {
   revision: string;
   layoutMode: DatasheetLayoutMode;
   layoutDensity: DatasheetLayoutDensity;
+  pageFillStrategy: "safe" | "balanced" | "aggressive";
   pageSize: "A4";
   orientation: "portrait";
   primaryColor: string;
@@ -33,6 +34,7 @@ export function createDefaultTemplateSettings(params: { productCode?: string; pr
     revision,
     layoutMode: "two-column",
     layoutDensity: "technical-dense",
+    pageFillStrategy: "balanced",
     pageSize: "A4",
     orientation: "portrait",
     primaryColor: "#0D2B55",

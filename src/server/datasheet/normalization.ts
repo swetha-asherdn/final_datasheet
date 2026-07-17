@@ -136,6 +136,29 @@ const SECTION_HEADING_WORDS = new Set([
   "ASSEMBLY CHARACTERISTICS",
   "ADDITIONAL INFORMATION"
 ]);
+const SECTION_HEADING_ORDER = [
+  "GENERAL DESCRIPTION",
+  "PIN CONFIGURATION",
+  "PINOUT",
+  "FEATURES",
+  "TYPICAL APPLICATION",
+  "APPLICATIONS",
+  "ABSOLUTE MAXIMUM RATINGS",
+  "RECOMMENDED OPERATING CONDITIONS",
+  "ELECTRICAL CHARACTERISTICS",
+  "APPLICATION INFORMATION",
+  "THERMAL DESIGN",
+  "CAPACITOR REQUIREMENTS",
+  "MINIMUM LOAD CURRENT",
+  "ADJUSTABLE REGULATOR DESIGN",
+  "ERROR FLAG",
+  "ENABLE INPUT",
+  "BLOCK DIAGRAM",
+  "PAD LOCATION AND COORDINATES",
+  "BONDING DIAGRAM",
+  "ASSEMBLY CHARACTERISTICS",
+  "ADDITIONAL INFORMATION"
+] as const;
 const TECHNICAL_CATEGORY_WORDS = [
   "regulator",
   "regulators",
@@ -269,9 +292,13 @@ export function convertToTiptapJson(pages: NormalizablePage[], removedTextIds: S
     const captionTextIds = new Set(captionSelections.map((item) => item.block.id));
     const textBlocks = orderTextBlocksForPage(page)
       .filter((block) => !removedTextIds.has(block.id) && !tableSuppressedTextIds.has(block.id) && !captionTextIds.has(block.id));
+    const tables = [...page.tables].sort(compareTables);
+    const items = mergeOrderedPageItems(page, textBlocks, tables);
 
-    for (const block of textBlocks) appendTextBlock(content, block);
-    for (const table of page.tables) appendTable(content, table);
+    for (const item of items) {
+      if (item.kind === "text") appendTextBlock(content, item.block);
+      else appendTable(content, item.table);
+    }
 
     for (const image of page.images.filter((item) => !removedImageIds.has(item.id) && isBodyRegion(page, item.boundingBox))) {
       const pairedCaption = captionSelections.find((item) => item.imageId === image.id)?.text;
@@ -289,7 +316,8 @@ export function convertToTiptapJson(pages: NormalizablePage[], removedTextIds: S
     }
   }
 
-  return { type: "doc", content: content.length ? content : [{ type: "paragraph", content: [{ type: "text", text: "Editable datasheet draft" }] }] };
+  const orderedContent = reorderKnownSections(content);
+  return { type: "doc", content: orderedContent.length ? orderedContent : [{ type: "paragraph", content: [{ type: "text", text: "Editable datasheet draft" }] }] };
 }
 
 function appendTextBlock(content: Array<Record<string, unknown>>, block: NormalizableTextBlock) {
@@ -723,10 +751,46 @@ function collectSuppressedTableTextIds(page: NormalizablePage) {
     const tableBox = table.boundingBox;
     if (!tableBox) continue;
     for (const block of page.textBlocks) {
-      if (overlaps(block.boundingBox, tableBox, 0.18)) ids.add(block.id);
+      if (!overlaps(block.boundingBox, tableBox, 0.18)) continue;
+      const headingAboveTable = isLikelyHeading(block)
+        && block.boundingBox.y + block.boundingBox.height <= tableBox.y + Math.max(14, tableBox.height * 0.12);
+      if (isSectionHeading(block.text) || headingAboveTable) continue;
+      ids.add(block.id);
     }
   }
   return ids;
+}
+
+function mergeOrderedPageItems(page: NormalizablePage, textBlocks: NormalizableTextBlock[], tables: NormalizableTable[]) {
+  const items: Array<{ kind: "text"; block: NormalizableTextBlock } | { kind: "table"; table: NormalizableTable }> = [];
+  let tableIndex = 0;
+
+  for (const block of textBlocks) {
+    while (tableIndex < tables.length) {
+      const table = tables[tableIndex];
+      const box = table.boundingBox ?? { x: page.width * 0.08, y: page.height * 0.52, width: page.width * 0.84, height: page.height * 0.12 };
+      if (box.y + Math.max(8, box.height * 0.08) < block.boundingBox.y) {
+        items.push({ kind: "table", table });
+        tableIndex += 1;
+        continue;
+      }
+      break;
+    }
+    items.push({ kind: "text", block });
+  }
+
+  while (tableIndex < tables.length) {
+    items.push({ kind: "table", table: tables[tableIndex] });
+    tableIndex += 1;
+  }
+
+  return items;
+}
+
+function compareTables(left: NormalizableTable, right: NormalizableTable) {
+  const leftBox = left.boundingBox ?? { x: 0, y: Number.MAX_SAFE_INTEGER };
+  const rightBox = right.boundingBox ?? { x: 0, y: Number.MAX_SAFE_INTEGER };
+  return leftBox.y - rightBox.y || leftBox.x - rightBox.x;
 }
 
 function orderTextBlocksForPage(page: NormalizablePage) {
@@ -902,6 +966,104 @@ function isLikelyHeading(block: NormalizableTextBlock) {
 
 function isSectionHeading(value: string) {
   return SECTION_HEADING_WORDS.has(value.trim().toUpperCase());
+}
+
+function reorderKnownSections(nodes: Array<Record<string, unknown>>) {
+  const preamble: Array<Record<string, unknown>> = [];
+  const sections: Array<{ heading: string; nodes: Array<Record<string, unknown>> }> = [];
+  let currentSection: { heading: string; nodes: Array<Record<string, unknown>> } | null = null;
+
+  for (const node of nodes) {
+    const heading = sectionHeadingForNode(node);
+    if (heading) {
+      if (currentSection) sections.push(currentSection);
+      currentSection = { heading, nodes: [node] };
+      continue;
+    }
+    if (currentSection) currentSection.nodes.push(node);
+    else preamble.push(node);
+  }
+  if (currentSection) sections.push(currentSection);
+
+  if (sections.length === 0) return nodes;
+
+  const known = new Map<string, Array<Record<string, unknown>>>();
+  const unknown: Array<Array<Record<string, unknown>>> = [];
+  for (const section of sections) {
+    if (!SECTION_HEADING_WORDS.has(section.heading)) {
+      unknown.push(section.nodes);
+      continue;
+    }
+    const existing = known.get(section.heading) ?? [];
+    existing.push(...section.nodes);
+    known.set(section.heading, existing);
+  }
+
+  repairSectionAssignments(known);
+
+  const ordered: Array<Record<string, unknown>> = [...preamble];
+  for (const heading of SECTION_HEADING_ORDER) {
+    const sectionNodes = known.get(heading);
+    if (!sectionNodes?.length) continue;
+    ordered.push(...sectionNodes);
+  }
+  for (const sectionNodes of unknown) ordered.push(...sectionNodes);
+  return ordered;
+}
+
+function repairSectionAssignments(known: Map<string, Array<Record<string, unknown>>>) {
+  moveMismatchedSectionNodes(
+    known,
+    "ADJUSTABLE REGULATOR DESIGN",
+    "ERROR FLAG",
+    (text) => /\b(error flag|over[-\s]?current fault|out of regulation|flag output|output low)\b/i.test(text),
+  );
+  moveMismatchedSectionNodes(
+    known,
+    "ERROR FLAG",
+    "ADJUSTABLE REGULATOR DESIGN",
+    (text) => /\b(r\s*1|r\s*2|vout|desired output voltage|resistor|adjustable regulator)\b/i.test(text),
+  );
+}
+
+function moveMismatchedSectionNodes(
+  known: Map<string, Array<Record<string, unknown>>>,
+  sourceHeading: string,
+  targetHeading: string,
+  predicate: (text: string) => boolean,
+) {
+  const source = known.get(sourceHeading);
+  const target = known.get(targetHeading);
+  if (!source?.length || !target?.length) return;
+
+  const moved: Array<Record<string, unknown>> = [];
+  const retained: Array<Record<string, unknown>> = [];
+  for (let index = 0; index < source.length; index += 1) {
+    const node = source[index];
+    if (index === 0) {
+      retained.push(node);
+      continue;
+    }
+    const text = nodePlainText(node);
+    if (text && predicate(text)) moved.push(node);
+    else retained.push(node);
+  }
+  if (moved.length === 0) return;
+  known.set(sourceHeading, retained);
+  known.set(targetHeading, [target[0], ...moved, ...target.slice(1)]);
+}
+
+function sectionHeadingForNode(node: Record<string, unknown>) {
+  if (String(node.type ?? "") !== "heading") return "";
+  const text = nodePlainText(node).toUpperCase();
+  return SECTION_HEADING_WORDS.has(text) ? text : "";
+}
+
+function nodePlainText(node: Record<string, unknown>): string {
+  const type = String(node.type ?? "");
+  if (type === "text") return String(node.text ?? "").trim();
+  const content = Array.isArray(node.content) ? node.content as Array<Record<string, unknown>> : [];
+  return content.map((child) => nodePlainText(child)).join(" ").replace(/\s+/g, " ").trim();
 }
 
 function headingLevel(block: NormalizableTextBlock) {

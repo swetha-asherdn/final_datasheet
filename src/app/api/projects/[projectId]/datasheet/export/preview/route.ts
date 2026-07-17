@@ -4,16 +4,19 @@ import { connectToDatabase } from "@/server/db";
 import { getPdfExportHtmlPreviewForProject } from "@/server/datasheet/export-service";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ projectId: string }> },
 ) {
   try {
     const { projectId } = await params;
     const user = await requireUser();
     await connectToDatabase();
+    const searchParams = new URL(request.url).searchParams;
+    const preferredMode = searchParams.get("mode") === "saved" ? "saved" : searchParams.get("mode") === "auto" ? "auto" : undefined;
     const html = await getPdfExportHtmlPreviewForProject({
       projectId,
       ownerId: user.id,
+      preferredMode,
     });
     return new Response(html, {
       status: 200,

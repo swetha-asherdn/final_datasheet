@@ -4,6 +4,7 @@ const projectFindOneMock = vi.hoisted(() => vi.fn());
 const projectExistsMock = vi.hoisted(() => vi.fn());
 const documentFindOneMock = vi.hoisted(() => vi.fn());
 const templateFindOneMock = vi.hoisted(() => vi.fn());
+const layoutFindOneMock = vi.hoisted(() => vi.fn());
 const exportCreateMock = vi.hoisted(() => vi.fn());
 const exportFindMock = vi.hoisted(() => vi.fn());
 const exportFindOneMock = vi.hoisted(() => vi.fn());
@@ -16,6 +17,7 @@ const getDocumentMock = vi.hoisted(() => vi.fn());
 vi.mock("@/server/models/project", () => ({ ProjectModel: { findOne: projectFindOneMock, exists: projectExistsMock } }));
 vi.mock("@/server/models/datasheet-document", () => ({ DatasheetDocumentModel: { findOne: documentFindOneMock } }));
 vi.mock("@/server/models/datasheet-template-settings", () => ({ DatasheetTemplateSettingsModel: { findOne: templateFindOneMock } }));
+vi.mock("@/server/models/datasheet-layout", () => ({ DatasheetLayoutModel: { findOne: layoutFindOneMock } }));
 vi.mock("@/server/models/datasheet-export", () => ({ DatasheetExportModel: { create: exportCreateMock, find: exportFindMock, findOne: exportFindOneMock } }));
 vi.mock("@/server/extraction/service", () => ({ getExtractedImageArtifactForProject: vi.fn(async () => null) }));
 vi.mock("@/server/storage/s3", () => ({ uploadPrivateObject: uploadPrivateObjectMock, getPrivateObject: getPrivateObjectMock }));
@@ -77,6 +79,7 @@ beforeEach(() => {
   projectExistsMock.mockReset();
   documentFindOneMock.mockReset();
   templateFindOneMock.mockReset();
+  layoutFindOneMock.mockReset();
   exportCreateMock.mockReset();
   exportFindMock.mockReset();
   exportFindOneMock.mockReset();
@@ -87,6 +90,7 @@ beforeEach(() => {
   getDocumentMock.mockReset();
 
   projectFindOneMock.mockReturnValue(leanDoc({ _id: projectId, name: "Test Project" }));
+  projectExistsMock.mockResolvedValue(true);
   documentFindOneMock.mockReturnValue(sortedLean({
     _id: documentId,
     templateSettingsId: templateId,
@@ -95,6 +99,7 @@ beforeEach(() => {
     productCategory: "Low-Dropout Regulators",
     editorJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Editable body" }] }] },
   }));
+  layoutFindOneMock.mockReturnValue(leanDoc(null));
   templateFindOneMock.mockReturnValue(leanDoc({
     _id: templateId,
     logoAssetPath: "/branding/vellore-semicon-logo.svg",
@@ -159,6 +164,18 @@ describe("createPdfExportForProject", () => {
     expect(html).toContain("box-shadow: 0 1mm 4mm rgba(15, 23, 42, 0.08);");
   });
 
+  it("adds the Phase 7B debug marker to preview HTML only when debug layout logging is enabled", async () => {
+    const previous = process.env.DEBUG_EXPORT_LAYOUT;
+    process.env.DEBUG_EXPORT_LAYOUT = "1";
+
+    try {
+      const html = await getPdfExportHtmlPreviewForProject({ projectId, ownerId, preferredMode: "auto" });
+      expect(html).toContain("PHASE_7B_FILL_FORWARD_ACTIVE");
+    } finally {
+      process.env.DEBUG_EXPORT_LAYOUT = previous;
+    }
+  });
+
   it("fails the export when physical PDF page count does not match the page model", async () => {
     const record = createExportRecord();
     exportCreateMock.mockResolvedValue(record);
@@ -197,3 +214,4 @@ describe("createPdfExportForProject", () => {
     expect(result.downloadUrl).toBeNull();
   });
 });
+

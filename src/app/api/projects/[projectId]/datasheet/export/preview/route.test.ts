@@ -25,7 +25,20 @@ describe("GET /api/projects/[projectId]/datasheet/export/preview", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("Content-Type")).toContain("text/html");
     expect(response.headers.get("Cache-Control")).toBe("no-store");
-    expect(getPreviewMock).toHaveBeenCalledWith({ projectId: "64f000000000000000000001", ownerId: "64f000000000000000000000" });
+    expect(getPreviewMock).toHaveBeenCalledWith({ projectId: "64f000000000000000000001", ownerId: "64f000000000000000000000", preferredMode: undefined });
     expect(body).toContain('class="pdf-page"');
   });
+
+  it("passes explicit preview mode through to the export service", async () => {
+    const { GET } = await import("@/app/api/projects/[projectId]/datasheet/export/preview/route");
+    getPreviewMock.mockClear();
+
+    await GET(new Request("http://localhost/api/projects/p/datasheet/export/preview?mode=auto"), { params: Promise.resolve({ projectId: "64f000000000000000000001" }) });
+    await GET(new Request("http://localhost/api/projects/p/datasheet/export/preview?mode=saved"), { params: Promise.resolve({ projectId: "64f000000000000000000001" }) });
+
+    expect(getPreviewMock).toHaveBeenNthCalledWith(1, { projectId: "64f000000000000000000001", ownerId: "64f000000000000000000000", preferredMode: "auto" });
+    expect(getPreviewMock).toHaveBeenNthCalledWith(2, { projectId: "64f000000000000000000001", ownerId: "64f000000000000000000000", preferredMode: "saved" });
+  });
 });
+
+
