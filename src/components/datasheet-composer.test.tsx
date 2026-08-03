@@ -1,5 +1,6 @@
 /** @vitest-environment jsdom */
 
+import { readFileSync } from "node:fs";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -122,6 +123,14 @@ const regeneratedBundle = {
     revision: "Rev. B",
     layoutMode: "two-column",
     layoutDensity: "technical-dense"
+  },
+  qualitySummary: {
+    sectionsDetected: 12,
+    tablesDetected: 5,
+    figuresDetected: 3,
+    warningsCount: 2,
+    unresolvedSymbolsCount: 0,
+    warnings: ["Duplicate heading removed", "Placeholder image text removed"]
   }
 };
 
@@ -245,6 +254,13 @@ describe("DatasheetComposer", () => {
   });
 
 
+  it("keeps generated datasheet list spacing compact in editor CSS", () => {
+    const css = readFileSync("src/app/globals.css", "utf8");
+    expect(css).toContain(".ProseMirror ul { @apply mb-2 list-disc space-y-0.5 pl-5; }");
+    expect(css).toContain(".ProseMirror li p { @apply mb-0; }");
+  });
+
+
   it("saves the datasheet editor payload successfully", async () => {
     await createDatasheet();
     await act(async () => clickButton("Save"));
@@ -272,7 +288,7 @@ describe("DatasheetComposer", () => {
 
     expect(confirmMock).toHaveBeenCalledWith("This will overwrite the current editable draft. Template settings will be preserved.");
     expect(fetchMock).toHaveBeenCalledWith("/api/projects/project-1/datasheet/regenerate", expect.objectContaining({ method: "POST" }));
-    expect(container.textContent).toContain("Editable datasheet regenerated from the latest extraction.");
+    expect(container.textContent).toContain("Editable datasheet regenerated: 12 sections, 5 tables, 3 figures, 2 warnings, 0 unresolved symbols.");
     const inputs = Array.from(container.querySelectorAll("input")).map((input) => input.value);
     expect(inputs).toContain("Low-Dropout Regulators");
     expect(container.textContent).toContain("Fresh draft");

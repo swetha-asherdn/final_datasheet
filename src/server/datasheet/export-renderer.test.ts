@@ -574,7 +574,7 @@ describe("export renderer", () => {
         productCategory: template.productTitle,
         editorJson: {
           type: "doc",
-          content: [{ type: "paragraph", content: [{ type: "text", text: "10uA 47uF 200x200 um ï„V OUT ï± SA T A <= 125Â°Ð¡ V OUT <= 5V I OUT >= 1A" }] }],
+          content: [{ type: "paragraph", content: [{ type: "text", text: `10uA 47uF 200x200 um ${String.fromCharCode(0xf044)}V OUT ${String.fromCharCode(0xf071)} SA T A <= 125\u00b0\u0421 V OUT <= 5V I OUT >= 1A` }] }],
         },
       },
     }, { mode: "pdf" });

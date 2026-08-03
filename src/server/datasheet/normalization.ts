@@ -1,3 +1,4 @@
+import { collectTextQualityWarnings, normalizeTechnicalText } from "@/server/datasheet/technical-text";
 import type { CleanupReasonCode, TiptapJson } from "@/server/datasheet/schema";
 
 export type BoundingBox = { x: number; y: number; width: number; height: number };
@@ -68,10 +69,20 @@ export type SourceCleanupReport = {
   reasonCodes: CleanupReasonCode[];
 };
 
+export type DatasheetContentQualitySummary = {
+  sectionsDetected: number;
+  tablesDetected: number;
+  figuresDetected: number;
+  warnings: string[];
+  warningsCount: number;
+  unresolvedSymbolsCount: number;
+};
+
 export type NormalizedDatasheet = {
   pages: NormalizablePage[];
   cleanupReport: SourceCleanupReport;
   editorJson: TiptapJson;
+  qualitySummary: DatasheetContentQualitySummary;
   title: string;
   productCode: string;
   productCategory: string;
@@ -271,10 +282,13 @@ export function normalizeDatasheetExtraction(pages: NormalizablePage[]): Normali
   const removedImageIds = new Set(cleanupReport.removedImages.map((item) => item.sourceId));
   const metadata = inferMetadata(pages, textClassifications, removedTextIds);
 
+  const editorJson = convertToTiptapJson(pages, removedTextIds, removedImageIds);
+
   return {
     pages,
     cleanupReport,
-    editorJson: convertToTiptapJson(pages, removedTextIds, removedImageIds),
+    editorJson,
+    qualitySummary: analyzeEditorContentQuality(editorJson),
     title: metadata.title,
     productCode: metadata.productCode,
     productCategory: metadata.productCategory,
@@ -293,38 +307,44 @@ export function convertToTiptapJson(pages: NormalizablePage[], removedTextIds: S
     const textBlocks = orderTextBlocksForPage(page)
       .filter((block) => !removedTextIds.has(block.id) && !tableSuppressedTextIds.has(block.id) && !captionTextIds.has(block.id));
     const tables = [...page.tables].sort(compareTables);
-    const items = mergeOrderedPageItems(page, textBlocks, tables);
+    const images = page.images.filter((item) => !removedImageIds.has(item.id) && isBodyRegion(page, item.boundingBox));
+    const items = mergeOrderedPageItems(page, textBlocks, tables, images, captionSelections);
 
     for (const item of items) {
       if (item.kind === "text") appendTextBlock(content, item.block);
+      else if (item.kind === "synthetic-heading") content.push(createHeadingNode(item.text));
+      else if (item.kind === "image") content.push(...createImageNodes(page, item.image, item.caption));
       else appendTable(content, item.table);
-    }
-
-    for (const image of page.images.filter((item) => !removedImageIds.has(item.id) && isBodyRegion(page, item.boundingBox))) {
-      const pairedCaption = captionSelections.find((item) => item.imageId === image.id)?.text;
-      const caption = pairedCaption ?? `Image from source page ${page.pageNumber}`;
-      content.push({
-        type: "image",
-        attrs: {
-          src: `/api/projects/${getProjectIdFromStorageKey(image.storageKey)}/artifacts/pages/${page.pageNumber}/images/${encodeURIComponent(image.id)}`,
-          alt: caption,
-          title: caption,
-          width: Math.min(image.width, 560)
-        }
-      });
-      content.push({ type: "paragraph", attrs: { class: "image-caption", sourceImageId: image.id }, content: [{ type: "text", text: caption }] });
     }
   }
 
-  const orderedContent = reorderKnownSections(content);
+  const orderedContent = finalizeEditorContent(reorderKnownSections(content));
+  if (process.env.NODE_ENV === "development" && (process.env.DEBUG_TEXT_QUALITY === "1" || process.env.DEBUG_EXPORT_LAYOUT === "1")) {
+    const headings = orderedContent.map((node) => sectionHeadingForNode(node)).filter(Boolean);
+    const warnings = collectTextQualityWarnings({ texts: orderedContent.map((node) => nodePlainText(node)).filter(Boolean), headings });
+    if (warnings.length > 0) console.info("[datasheet] text quality warnings", warnings);
+  }
   return { type: "doc", content: orderedContent.length ? orderedContent : [{ type: "paragraph", content: [{ type: "text", text: "Editable datasheet draft" }] }] };
 }
 
 function appendTextBlock(content: Array<Record<string, unknown>>, block: NormalizableTextBlock) {
-  const text = block.text.trim();
-  if (!text || isLikelyCaption(text) || isDocumentStatusText(text)) return;
+  const normalizedText = normalizeTechnicalText(block.text.trim());
+  if (!normalizedText || isLikelyCaption(normalizedText) || isDocumentStatusText(normalizedText)) return;
 
-  const bulletItems = splitBulletItems(text);
+  const headingSequence = splitKnownHeadingSequence(normalizedText);
+  if (headingSequence) {
+    content.push(...headingSequence);
+    return;
+  }
+
+  const mergedHeadingParts = splitMergedHeadingText(normalizedText);
+  if (mergedHeadingParts) {
+    content.push(createHeadingNode(mergedHeadingParts.heading));
+    appendTextBlock(content, { ...block, text: mergedHeadingParts.body });
+    return;
+  }
+
+  const bulletItems = splitBulletItems(normalizedText).map((item) => normalizeTechnicalText(item));
   if (bulletItems.length > 0) {
     content.push({
       type: "bulletList",
@@ -333,31 +353,34 @@ function appendTextBlock(content: Array<Record<string, unknown>>, block: Normali
     return;
   }
 
-  if (isLikelyHeading(block)) {
-    content.push({ type: "heading", attrs: { level: headingLevel(block) }, content: [{ type: "text", text }] });
+  const normalizedBlock = { ...block, text: normalizedText };
+  if (isLikelyHeading(normalizedBlock)) {
+    content.push(createHeadingNode(normalizedText, headingLevel(normalizedBlock)));
     return;
   }
 
-  content.push({ type: "paragraph", content: [{ type: "text", text }] });
+  content.push({ type: "paragraph", content: [{ type: "text", text: normalizedText }] });
 }
 
 function appendTable(content: Array<Record<string, unknown>>, table: NormalizableTable) {
-  if (!isReliableTable(table)) {
+  const rows = cleanTableRows(table.rows);
+  const cleanedTable = { ...table, rows };
+  if (!isReliableTable(cleanedTable)) {
     content.push({ type: "paragraph", attrs: { class: "table-review", sourceTableId: table.id }, content: [{ type: "text", text: "Table extraction needs review" }] });
-    const fallback = table.rows.flatMap((row) => row.map((cell) => cell.text.trim()).filter(Boolean)).join(" | ");
+    const fallback = rows.flatMap((row) => row.map((cell) => normalizeTechnicalText(cell.text.trim())).filter(Boolean)).join(" | ");
     if (fallback) content.push({ type: "paragraph", attrs: { class: "table-review-text", sourceTableId: table.id }, content: [{ type: "text", text: fallback }] });
     return;
   }
 
-  const hasHeader = isHeaderLikeRow(table.rows[0] ?? []);
+  const hasHeader = isHeaderLikeRow(rows[0] ?? []);
   content.push({
     type: "table",
-    content: table.rows.map((row, rowIndex) => ({
+    content: rows.map((row, rowIndex) => ({
       type: "tableRow",
       content: row.map((cell) => ({
         type: hasHeader && rowIndex === 0 ? "tableHeader" : "tableCell",
         attrs: { colspan: cell.colSpan ?? 1, rowspan: cell.rowSpan ?? 1 },
-        content: [{ type: "paragraph", content: cell.text ? [{ type: "text", text: cell.text }] : [] }]
+        content: [{ type: "paragraph", content: cell.text ? [{ type: "text", text: normalizeTechnicalText(cell.text) }] : [] }]
       }))
     }))
   });
@@ -761,30 +784,157 @@ function collectSuppressedTableTextIds(page: NormalizablePage) {
   return ids;
 }
 
-function mergeOrderedPageItems(page: NormalizablePage, textBlocks: NormalizableTextBlock[], tables: NormalizableTable[]) {
-  const items: Array<{ kind: "text"; block: NormalizableTextBlock } | { kind: "table"; table: NormalizableTable }> = [];
+function mergeOrderedPageItems(page: NormalizablePage, textBlocks: NormalizableTextBlock[], tables: NormalizableTable[], images: NormalizableImage[] = [], captions: Array<{ imageId: string; text: string; block: NormalizableTextBlock }> = []) {
+  const items: Array<
+    | { kind: "text"; block: NormalizableTextBlock }
+    | { kind: "table"; table: NormalizableTable }
+    | { kind: "image"; image: NormalizableImage; caption: string }
+    | { kind: "synthetic-heading"; text: string }
+  > = [];
   let tableIndex = 0;
+  let imageIndex = 0;
+  let lastHeading = "";
+  const sortedImages = [...images].sort(compareImages);
 
-  for (const block of textBlocks) {
+  const pushTable = (table: NormalizableTable) => {
+    const inferredHeading = inferTableHeadingFromRows(table);
+    if (inferredHeading && inferredHeading !== lastHeading) {
+      items.push({ kind: "synthetic-heading", text: inferredHeading });
+      lastHeading = inferredHeading;
+    }
+    items.push({ kind: "table", table });
+  };
+
+  const pushImage = (image: NormalizableImage) => {
+    const pairedCaption = captions.find((item) => item.imageId === image.id)?.text ?? "";
+    items.push({ kind: "image", image, caption: pairedCaption });
+  };
+
+  const pushArtifactsBefore = (y: number) => {
     while (tableIndex < tables.length) {
       const table = tables[tableIndex];
       const box = table.boundingBox ?? { x: page.width * 0.08, y: page.height * 0.52, width: page.width * 0.84, height: page.height * 0.12 };
-      if (box.y + Math.max(8, box.height * 0.08) < block.boundingBox.y) {
-        items.push({ kind: "table", table });
+      if (box.y + Math.max(8, box.height * 0.08) < y) {
+        pushTable(table);
         tableIndex += 1;
         continue;
       }
       break;
     }
-    items.push({ kind: "text", block });
+
+    while (imageIndex < sortedImages.length) {
+      const image = sortedImages[imageIndex];
+      if (image.boundingBox.y < y) {
+        pushImage(image);
+        imageIndex += 1;
+        continue;
+      }
+      break;
+    }
+  };
+
+  for (const block of textBlocks) {
+    pushArtifactsBefore(block.boundingBox.y);
+
+    const normalizedBlock = { ...block, text: normalizeTechnicalText(block.text) };
+    if (isSectionHeading(normalizedBlock.text)) lastHeading = normalizedBlock.text.trim().toUpperCase();
+    items.push({ kind: "text", block: normalizedBlock });
   }
 
-  while (tableIndex < tables.length) {
-    items.push({ kind: "table", table: tables[tableIndex] });
-    tableIndex += 1;
-  }
+  pushArtifactsBefore(Number.POSITIVE_INFINITY);
 
   return items;
+}
+
+function createImageNodes(page: NormalizablePage, image: NormalizableImage, pairedCaption: string) {
+  const caption = pairedCaption ? normalizeTechnicalText(pairedCaption) : `Extracted image page ${page.pageNumber}`;
+  const nodes: Array<Record<string, unknown>> = [{
+    type: "image",
+    attrs: {
+      src: `/api/projects/${getProjectIdFromStorageKey(image.storageKey)}/artifacts/pages/${page.pageNumber}/images/${encodeURIComponent(image.id)}`,
+      alt: caption,
+      title: caption,
+      width: Math.min(image.width, 560)
+    }
+  }];
+  if (pairedCaption) nodes.push({ type: "paragraph", attrs: { class: "image-caption", sourceImageId: image.id }, content: [{ type: "text", text: caption }] });
+  return nodes;
+}
+
+function compareImages(left: NormalizableImage, right: NormalizableImage) {
+  return left.boundingBox.y - right.boundingBox.y || left.boundingBox.x - right.boundingBox.x;
+}
+
+function splitMergedHeadingText(text: string) {
+  const normalized = text.trim();
+  const headingPattern = SECTION_HEADING_ORDER.map((heading) => escapeRegExp(heading)).join("|");
+  const match = normalized.match(new RegExp("^(" + headingPattern + ")\\s+(.+)$", "i"));
+  if (!match?.[1] || !match[2]) return null;
+  return { heading: match[1].toUpperCase(), body: match[2].trim() };
+}
+
+function splitKnownHeadingSequence(text: string) {
+  let remaining = normalizeTechnicalText(text).trim();
+  const nodes: Array<Record<string, unknown>> = [];
+  let guard = 0;
+  while (remaining && guard < 20) {
+    guard += 1;
+    const heading = findLeadingSectionHeading(remaining);
+    if (!heading) break;
+    nodes.push(createHeadingNode(heading));
+    remaining = remaining.slice(heading.length).trim();
+  }
+  return nodes.length > 1 && !remaining ? nodes : null;
+}
+
+function findLeadingSectionHeading(text: string) {
+  const upper = text.trim().toUpperCase();
+  return [...SECTION_HEADING_ORDER]
+    .sort((left, right) => right.length - left.length)
+    .find((heading) => upper === heading || upper.startsWith(heading + " ")) ?? "";
+}
+
+function isNoteText(value: string) {
+  return /^Note\s*[1-9]\b/i.test(value.trim());
+}
+
+function inferTableHeadingFromRows(table: NormalizableTable) {
+  const rows = cleanTableRows(table.rows);
+  const text = normalizeTechnicalText(rows.flatMap((row) => row.map((cell) => cell.text.trim())).join(" ")).toUpperCase();
+  if (!text) return "";
+  if (/ABSOLUTE|RATING|STORAGE|POWER DISSIPATION|JUNCTION TEMPERATURE/.test(text)) return "ABSOLUTE MAXIMUM RATINGS";
+  if (/RECOMMENDED|OPERATING CONDITIONS|INPUT VOLTAGE|AMBIENT TEMPERATURE/.test(text)) return "RECOMMENDED OPERATING CONDITIONS";
+  if (/PAD|COORDINATE|LOCATION|X\s+Y|BOND PAD/.test(text)) return "PAD LOCATION AND COORDINATES";
+  if (/ASSEMBLY|SUBSTRATE|DIE ATTACH|WIRE BOND|BACKSIDE/.test(text)) return "ASSEMBLY CHARACTERISTICS";
+  if (/MIN|TYP|MAX|TEST CONDITIONS|OUTPUT VOLTAGE|GROUND CURRENT|DROPOUT|FLAG OUTPUT|ENABLE INPUT/.test(text)) return "ELECTRICAL CHARACTERISTICS";
+  return "";
+}
+
+function cleanTableRows(rows: NormalizableTableCell[][]) {
+  const compactRows = rows
+    .map((row) => row.map((cell) => ({ ...cell, text: normalizeTechnicalText(cell.text.replace(/\s*\n\s*/g, " ").trim()) })))
+    .filter((row) => row.some((cell) => cell.text.length > 0));
+  const maxColumns = Math.max(0, ...compactRows.map((row) => row.length));
+  const nonEmptyColumns = Array.from({ length: maxColumns }, (_value, index) => index)
+    .filter((columnIndex) => compactRows.some((row) => (row[columnIndex]?.text ?? "").trim().length > 0));
+  return compactRows.map((row) => nonEmptyColumns.map((columnIndex) => row[columnIndex] ?? { text: "" }));
+}
+
+function createHeadingNode(text: string, level = 2): Record<string, unknown> {
+  return { type: "heading", attrs: { level }, content: [{ type: "text", text }] };
+}
+
+function attachLooseNotesToElectricalCharacteristics(known: Map<string, Array<Record<string, unknown>>>) {
+  const electrical = known.get("ELECTRICAL CHARACTERISTICS");
+  if (!electrical?.length) return;
+
+  for (const [heading, nodes] of known.entries()) {
+    if (heading === "ELECTRICAL CHARACTERISTICS" || nodes.length <= 1) continue;
+    const moved = nodes.slice(1).filter((node) => isNoteText(nodePlainText(node)));
+    if (moved.length === 0) continue;
+    known.set(heading, [nodes[0], ...nodes.slice(1).filter((node) => !isNoteText(nodePlainText(node)))]);
+    known.set("ELECTRICAL CHARACTERISTICS", [...electrical, ...moved]);
+  }
 }
 
 function compareTables(left: NormalizableTable, right: NormalizableTable) {
@@ -954,9 +1104,10 @@ function splitBulletItems(value: string) {
 }
 
 function isLikelyHeading(block: NormalizableTextBlock) {
-  const text = block.text.trim();
+  const text = normalizeTechnicalText(block.text.trim());
   if (!text || text.length > 100) return false;
   if (isSectionHeading(text)) return true;
+  if (isNoteText(text)) return false;
   const alpha = text.replace(/[^A-Za-z]/g, "");
   const uppercaseRatio = alpha.length ? alpha.replace(/[^A-Z]/g, "").length / alpha.length : 0;
   const wordCount = text.split(/\s+/).length;
@@ -995,11 +1146,12 @@ function reorderKnownSections(nodes: Array<Record<string, unknown>>) {
       continue;
     }
     const existing = known.get(section.heading) ?? [];
-    existing.push(...section.nodes);
+    existing.push(...(existing.length > 0 ? section.nodes.slice(1) : section.nodes));
     known.set(section.heading, existing);
   }
 
   repairSectionAssignments(known);
+  normalizeSectionListContent(known);
 
   const ordered: Array<Record<string, unknown>> = [...preamble];
   for (const heading of SECTION_HEADING_ORDER) {
@@ -1024,6 +1176,113 @@ function repairSectionAssignments(known: Map<string, Array<Record<string, unknow
     "ADJUSTABLE REGULATOR DESIGN",
     (text) => /\b(r\s*1|r\s*2|vout|desired output voltage|resistor|adjustable regulator)\b/i.test(text),
   );
+  moveMismatchedSectionNodes(
+    known,
+    "ADJUSTABLE REGULATOR DESIGN",
+    "ENABLE INPUT",
+    (text) => /\b(enable input|shutdown pin|enable threshold|ven|ien)\b/i.test(text),
+  );
+  moveMismatchedSectionNodes(
+    known,
+    "PAD LOCATION AND COORDINATES",
+    "BLOCK DIAGRAM",
+    (text) => /\b(block diagram|error amplifier|pass transistor|reference|enable input)\b/i.test(text),
+  );
+  moveMismatchedSectionNodes(
+    known,
+    "ELECTRICAL CHARACTERISTICS",
+    "ASSEMBLY CHARACTERISTICS",
+    (text) => /\b(assembly|substrate|die attach|wire bond|backside|process)\b/i.test(text),
+  );
+  moveMismatchedSectionNodes(
+    known,
+    "ELECTRICAL CHARACTERISTICS",
+    "PAD LOCATION AND COORDINATES",
+    (text) => /\b(pad location|coordinates|bond pad|pad\s+number)\b/i.test(text),
+  );
+  attachLooseNotesToElectricalCharacteristics(known);
+}
+
+function normalizeSectionListContent(known: Map<string, Array<Record<string, unknown>>>) {
+  for (const heading of ["FEATURES", "APPLICATIONS"] as const) {
+    const nodes = known.get(heading);
+    if (!nodes?.length) continue;
+    const retained: Array<Record<string, unknown>> = [nodes[0]];
+    const listItems: string[] = [];
+    const flushList = () => {
+      if (listItems.length > 0) retained.push(createBulletListNode(listItems.splice(0, listItems.length)));
+    };
+
+    for (const node of nodes.slice(1)) {
+      const text = nodePlainText(node);
+      if (!text) continue;
+      if (String(node.type ?? "") === "bulletList") {
+        for (const item of extractListItemTexts(node)) {
+          const parts = splitFigureCaptionFromText(item);
+          if (parts.before) addCompactListText(listItems, parts.before);
+          if (parts.caption) {
+            flushList();
+            retained.push(createCaptionParagraph(parts.caption));
+          }
+        }
+        continue;
+      }
+      if (String(node.type ?? "") === "paragraph") {
+        const parts = splitFigureCaptionFromText(text);
+        if (parts.before) addCompactListText(listItems, parts.before);
+        if (parts.caption) {
+          flushList();
+          retained.push(createCaptionParagraph(parts.caption));
+        }
+        continue;
+      }
+      flushList();
+      retained.push(node);
+    }
+    flushList();
+    known.set(heading, retained);
+  }
+}
+
+function splitFigureCaptionFromText(text: string) {
+  const normalized = normalizeTechnicalText(text);
+  const match = normalized.match(/\b(?:Figure|Fig\.)\s*\d+\s*\./i);
+  if (!match || match.index === undefined) return { before: normalized, caption: "" };
+  return { before: normalized.slice(0, match.index).trim(), caption: normalized.slice(match.index).trim() };
+}
+
+function createCaptionParagraph(text: string): Record<string, unknown> {
+  return { type: "paragraph", attrs: { class: "image-caption" }, content: [{ type: "text", text: normalizeTechnicalText(text) }] };
+}
+
+function addCompactListText(items: string[], text: string) {
+  const normalized = normalizeTechnicalText(text);
+  if (!normalized || isSectionHeading(normalized)) return;
+  const previous = items[items.length - 1];
+  if (previous && shouldMergeWrappedListItem(previous, normalized)) {
+    items[items.length - 1] = previous + " " + normalized;
+    return;
+  }
+  items.push(normalized);
+}
+
+function shouldMergeWrappedListItem(previous: string, next: string) {
+  const words = next.split(/\s+/).filter(Boolean);
+  if (words.length <= 2) return true;
+  if (/\b(with|for|to|and|or|of|in)$/i.test(previous)) return true;
+  return previous.length < 72 && /^[A-Z][A-Za-z-]+/.test(next) && !/[.!?:;]$/.test(previous);
+}
+
+function createBulletListNode(items: string[]): Record<string, unknown> {
+  return {
+    type: "bulletList",
+    content: items.map((item) => ({ type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: item }] }] }))
+  };
+}
+
+function extractListItemTexts(node: Record<string, unknown>) {
+  const content = Array.isArray(node.content) ? node.content as Array<Record<string, unknown>> : [];
+  return content.map((item) => nodePlainText(item)).filter(Boolean);
 }
 
 function moveMismatchedSectionNodes(
@@ -1064,6 +1323,59 @@ function nodePlainText(node: Record<string, unknown>): string {
   if (type === "text") return String(node.text ?? "").trim();
   const content = Array.isArray(node.content) ? node.content as Array<Record<string, unknown>> : [];
   return content.map((child) => nodePlainText(child)).join(" ").replace(/\s+/g, " ").trim();
+}
+
+function finalizeEditorContent(nodes: Array<Record<string, unknown>>) {
+  const result: Array<Record<string, unknown>> = [];
+  let previousHeading = "";
+  for (const node of nodes) {
+    const text = nodePlainText(node);
+    if (/^Image from source page \d+$/i.test(text)) continue;
+    const heading = sectionHeadingForNode(node);
+    if (heading) {
+      if (heading === previousHeading) continue;
+      previousHeading = heading;
+      result.push(node);
+      continue;
+    }
+    if (text) previousHeading = "";
+    result.push(node);
+  }
+  return result;
+}
+
+export function analyzeEditorContentQuality(editorJson: TiptapJson): DatasheetContentQualitySummary {
+  const content = Array.isArray(editorJson.content) ? editorJson.content as Array<Record<string, unknown>> : [];
+  const headings = content.map((node) => sectionHeadingForNode(node)).filter(Boolean);
+  const texts = content.map((node) => nodePlainText(node)).filter(Boolean);
+  const warnings = new Set(collectTextQualityWarnings({ texts, headings }));
+  for (let index = 0; index < headings.length - 1; index += 1) {
+    if (headings[index] === headings[index + 1]) warnings.add("Duplicated heading: " + headings[index]);
+  }
+  if (texts.some((text) => /^Image from source page \d+$/i.test(text))) warnings.add("Placeholder image text found");
+  const listItems = content.flatMap((node) => String(node.type ?? "") === "bulletList" ? extractListItemTexts(node) : []);
+  if (content.some((node) => String(node.type ?? "") === "bulletList" && extractListItemTexts(node).some((item) => isSectionHeading(item)))) warnings.add("Heading converted to bullet");
+  if (listItems.some((item) => /\b(?:Figure|Fig\.)\s*\d+\s*\./i.test(item))) warnings.add("Figure caption merged into list item");
+  if (sectionContainsText(content, "ELECTRICAL CHARACTERISTICS", /\b(assembly|die attach|wire bond|substrate)\b/i)) warnings.add("Assembly table inside electrical section");
+  const unresolvedSymbolsCount = texts.filter((text) => /[\uF044\uF071]|�|�|�|�/.test(text)).length;
+  return {
+    sectionsDetected: new Set(headings).size,
+    tablesDetected: content.filter((node) => String(node.type ?? "") === "table").length,
+    figuresDetected: content.filter((node) => String(node.type ?? "") === "image").length,
+    warnings: Array.from(warnings),
+    warningsCount: warnings.size,
+    unresolvedSymbolsCount
+  };
+}
+
+function sectionContainsText(nodes: Array<Record<string, unknown>>, section: string, pattern: RegExp) {
+  let active = "";
+  for (const node of nodes) {
+    const heading = sectionHeadingForNode(node);
+    if (heading) active = heading;
+    else if (active === section && pattern.test(nodePlainText(node))) return true;
+  }
+  return false;
 }
 
 function headingLevel(block: NormalizableTextBlock) {

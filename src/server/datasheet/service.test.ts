@@ -117,7 +117,8 @@ describe("regenerateDatasheetFromExtraction", () => {
       productCode: "CW29150R-XX / CW29150R-ADJ / CW29151R-XX",
       productCategory: "Low-Dropout Regulators",
       documentStatus: "Preliminary Datasheet",
-      revision: ""
+      revision: "",
+      qualitySummary: { sectionsDetected: 3, tablesDetected: 1, figuresDetected: 0, warningsCount: 0, unresolvedSymbolsCount: 0, warnings: [] }
     });
 
     const result = await regenerateDatasheetFromExtraction({ projectId: "64f000000000000000000001", ownerId: "64f000000000000000000000" });
@@ -137,6 +138,7 @@ describe("regenerateDatasheetFromExtraction", () => {
     expect(templateRecord.revision).toBe("Rev. A");
     expect(projectUpdateOneMock).toHaveBeenCalledTimes(1);
     expect(result?.document.productCode).toBe("CW29150R-XX / CW29150R-ADJ / CW29151R-XX");
+    expect(result?.qualitySummary).toEqual(expect.objectContaining({ sectionsDetected: 3, tablesDetected: 1 }));
   });
 
   it("preserves existing custom template settings where possible", async () => {
@@ -213,7 +215,8 @@ describe("regenerateDatasheetFromExtraction", () => {
       productCode: "CW29150R-XX / CW29150R-ADJ / CW29151R-XX",
       productCategory: "Low-Dropout Regulators",
       documentStatus: "Preliminary Datasheet",
-      revision: "Rev. B"
+      revision: "Rev. B",
+      qualitySummary: { sectionsDetected: 3, tablesDetected: 1, figuresDetected: 0, warningsCount: 0, unresolvedSymbolsCount: 0, warnings: [] }
     });
 
     const result = await regenerateDatasheetFromExtraction({ projectId: "64f000000000000000000001", ownerId: "64f000000000000000000000" });

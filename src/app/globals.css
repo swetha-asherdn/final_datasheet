@@ -15,9 +15,10 @@
   .ProseMirror h2 { @apply mb-3 mt-6 text-lg font-semibold uppercase text-slate-900; }
   .ProseMirror h3 { @apply mb-2 mt-5 text-base font-semibold text-slate-900; }
   .ProseMirror p { @apply mb-3; }
-  .ProseMirror ul { @apply mb-4 list-disc space-y-1 pl-6; }
-  .ProseMirror ol { @apply mb-4 list-decimal space-y-1 pl-6; }
-  .ProseMirror li p { @apply mb-1; }
+  .ProseMirror ul { @apply mb-2 list-disc space-y-0.5 pl-5; }
+  .ProseMirror ol { @apply mb-2 list-decimal space-y-0.5 pl-5; }
+  .ProseMirror li { @apply my-0 leading-5; }
+  .ProseMirror li p { @apply mb-0; }
   .ProseMirror img { @apply mx-auto my-5 max-h-80 max-w-full rounded border border-slate-200 bg-white object-contain p-1; }
   .ProseMirror table { @apply my-5 w-full table-fixed border-collapse text-xs; }
   .ProseMirror td, .ProseMirror th { @apply border border-slate-300 px-2.5 py-2 align-top; }

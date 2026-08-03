@@ -114,7 +114,8 @@ export async function regenerateDatasheetFromExtraction(params: { projectId: str
     }
   );
 
-  return getDatasheetForProject(params);
+  const bundle = await getDatasheetForProject(params);
+  return bundle ? { ...bundle, qualitySummary: normalized.qualitySummary } : null;
 }
 
 export async function getDatasheetForProject(params: { projectId: string; ownerId: string }) {

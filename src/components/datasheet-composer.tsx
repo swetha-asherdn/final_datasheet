@@ -31,7 +31,8 @@ type CleanupItem = { id: string; itemType: "text" | "image"; pageNumber: number;
 type CleanupReport = { removedTextBlocks: CleanupItem[]; removedImages: CleanupItem[]; uncertainItems: CleanupItem[]; confidence: number; reasonCodes: string[] };
 type DatasheetDocument = { id: string; status: string; title: string; productCode: string; productCategory: string; editorJson: JSONContent; sourceCleanupReport: CleanupReport; lastSavedAt: string };
 type TemplateSettings = { id: string; logoAssetPath: string; companyName: string; website: string; productCode: string; productTitle: string; documentStatus: string; revision: string; layoutMode: "two-column" | "single-column"; layoutDensity: "comfortable" | "technical-dense"; pageFillStrategy: "safe" | "balanced" | "aggressive"; primaryColor: string; accentColor: string; footerText: string; showPageNumbers: boolean };
-type DatasheetBundle = { document: DatasheetDocument; template: TemplateSettings };
+type DatasheetQualitySummary = { sectionsDetected: number; tablesDetected: number; figuresDetected: number; warningsCount: number; unresolvedSymbolsCount: number; warnings?: string[] };
+type DatasheetBundle = { document: DatasheetDocument; template: TemplateSettings; qualitySummary?: DatasheetQualitySummary };
 type DatasheetLayoutExportMode = "auto" | "saved";
 type DatasheetLayoutBlock = {
   id: string;
@@ -342,7 +343,8 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
         setNotice({ tone: "error", text: await safeErrorMessage(response, "Editable datasheet could not be regenerated.") });
         return;
       }
-      setBundle((await response.json()) as DatasheetBundle);
+      const nextBundle = (await response.json()) as DatasheetBundle;
+      setBundle(nextBundle);
       setLayout(null);
       setLayoutState("missing");
       setSaveState("saved");
@@ -354,7 +356,7 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
       setPreviewVersion((current) => current + 1);
       void loadExports();
       setTab("editor");
-      setNotice({ tone: "success", text: "Editable datasheet regenerated from the latest extraction." });
+      setNotice({ tone: "success", text: regenerateSummaryMessage(nextBundle.qualitySummary) });
     });
   }
 
@@ -546,6 +548,11 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
       {tab === "export" && bundle ? <ExportPanel exports={exports} exportState={exportState} exportError={exportError} hasUnsavedChanges={hasUnsavedChanges} exportMode={exportMode} layoutState={layoutState} onModeChange={applyExportMode} onGenerateLayout={() => generateLayout()} onExport={createPdfExport} onRefresh={loadExports} /> : null}
     </div>
   );
+}
+
+function regenerateSummaryMessage(summary?: DatasheetQualitySummary) {
+  if (!summary) return "Editable datasheet regenerated from the latest extraction.";
+  return `Editable datasheet regenerated: ${summary.sectionsDetected} sections, ${summary.tablesDetected} tables, ${summary.figuresDetected} figures, ${summary.warningsCount} warnings, ${summary.unresolvedSymbolsCount} unresolved symbols.`;
 }
 
 function DatasheetEditor({ bundle, saveState, saveError, onDirtyChange, onTemplateDirtyChange, onSave, onTemplateSave, onOpenPagedLayout }: { bundle: DatasheetBundle; saveState: SaveState; saveError: string | null; onDirtyChange: (dirty: boolean) => void; onTemplateDirtyChange: (dirty: boolean) => void; onSave: (input: Partial<DatasheetDocument>) => Promise<boolean>; onTemplateSave: (input: Partial<TemplateSettings>) => Promise<boolean>; onOpenPagedLayout: () => void }) {
