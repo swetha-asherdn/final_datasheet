@@ -1,8 +1,9 @@
-﻿import { Types } from "mongoose";
+import { Types } from "mongoose";
 import { AppError } from "@/lib/errors";
 import {
   buildExportPageModel,
   renderExportDocumentHtml,
+  resolvePageCapacity,
   type ExportBlock,
   type ExportPageModel,
   type ExportTemplateSnapshot,
@@ -217,7 +218,7 @@ function createGeneratedLayout(template: ExportTemplateSnapshot, pageModel: Expo
     return {
       pageNumber: pageIndex + 1,
       usedHeight: page.usedHeight,
-      bodyHeight: template.layoutDensity === "technical-dense" && template.layoutMode === "two-column" ? 264 : 240,
+      bodyHeight: resolvePageCapacity({ layoutMode: template.layoutMode, layoutDensity: template.layoutDensity }),
       warnings: computePageWarnings(pageIndex, pageModel.pages.length, page.usedHeight, blocks),
       blocks,
     } satisfies SerializedLayoutPage;

@@ -67,16 +67,16 @@ export type ExportPageModel = { title: string; productCode: string; logoSrc: str
 type ImageDisplaySize = "small" | "medium" | "full";
 type ImageMeta = { src: string; alt: string; width: number | null; height: number | null; aspectRatio: number | null; imageKey: string; variantClass: string; displaySize: ImageDisplaySize };
 
-const PAGE_BODY_CAPACITY = 240;
-const PAGE_BODY_CAPACITY_DENSE = 264;
-const PAGE_BODY_IMAGE_MAX = 152;
-const PAGE_BODY_IMAGE_MAX_DENSE = 138;
+const PAGE_BODY_CAPACITY = 228;
+const PAGE_BODY_CAPACITY_DENSE = 248;
+const PAGE_BODY_IMAGE_MAX = 144;
+const PAGE_BODY_IMAGE_MAX_DENSE = 130;
 const IMAGE_MAX_WIDTH = 158;
 const COLUMN_IMAGE_MAX_WIDTH = 80;
-const TABLE_SEGMENT_TARGET_HEIGHT = 136;
-const TABLE_SEGMENT_TARGET_HEIGHT_DENSE = 156;
-const MAX_TABLE_SEGMENT_HEIGHT = 152;
-const MAX_TABLE_SEGMENT_HEIGHT_DENSE = 170;
+const TABLE_SEGMENT_TARGET_HEIGHT = 128;
+const TABLE_SEGMENT_TARGET_HEIGHT_DENSE = 146;
+const MAX_TABLE_SEGMENT_HEIGHT = 144;
+const MAX_TABLE_SEGMENT_HEIGHT_DENSE = 160;
 const MIN_TABLE_ROWS_PER_SEGMENT = 2;
 const FILL_TARGET_MIDDLE_PAGE = 0.82;
 const FILL_RETRY_THRESHOLD = 0.75;
@@ -124,8 +124,9 @@ export function renderExportDocumentHtml(pageModel: ExportPageModel, template: E
       ? `<!-- PHASE_7B_FILL_FORWARD_ACTIVE pages=${totalPages} -->`
       : "";
   return `<!doctype html>${debugMarker}<html lang="en" class="export-mode-${mode}"><head><meta charset="utf-8" /><title>${escapeHtml(pageModel.title || "Vellore Semicon Datasheet")}</title><style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans:ital,wght@0,100..900;1,100..900&family=Noto+Sans+Symbols+2&family=Noto+Sans+Symbols&display=swap');
   @page { size: A4 portrait; margin: 0; } * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; color: #1f2933; font-family: "Segoe UI", Arial, "Noto Sans", "Noto Sans Symbols 2", "Noto Sans Symbols", "DejaVu Sans", Helvetica, sans-serif; font-size: 10pt; line-height: 1.42; }
+  html, body { margin: 0; padding: 0; color: #1f2933; font-family: "Segoe UI", Arial, "Noto Sans", "Noto Sans Symbols 2", "Noto Sans Symbols", "DejaVu Sans", Helvetica, sans-serif; font-size: 10pt; line-height: 1.52; }
   html.export-mode-pdf, body.export-mode-pdf { width: 210mm; background: #ffffff; } html.export-mode-preview, body.export-mode-preview { width: auto; background: #eef3f8; }
   body.export-mode-pdf { width: 210mm; padding: 0; } body.export-mode-preview { padding: 8mm 0; }
   .pdf-document { width: 210mm; } body.export-mode-pdf .pdf-document { margin: 0; } body.export-mode-preview .pdf-document { margin: 0 auto; }
@@ -137,16 +138,16 @@ export function renderExportDocumentHtml(pageModel: ExportPageModel, template: E
   .header-meta { min-width: 0; text-align: right; } .product-code { color: ${escapeCssColor(template.primaryColor)}; font-size: ${pageModel.productCode.length > 48 ? "7.1pt" : "7.9pt"}; font-style: italic; font-weight: 700; line-height: 1.2; text-transform: uppercase; overflow-wrap: anywhere; word-break: break-word; }
   .gradient-line { height: 1.02mm; background: linear-gradient(90deg, ${escapeCssColor(template.accentColor)}, ${escapeCssColor(template.primaryColor)}); } .thin-line { height: 0.28mm; background: linear-gradient(90deg, ${escapeCssColor(template.accentColor)}, ${escapeCssColor(template.primaryColor)}); }
   .product-title { color: ${escapeCssColor(template.primaryColor)}; font-size: ${pageModel.title.length > 38 ? "7.05pt" : "8.15pt"}; font-style: italic; font-weight: 700; line-height: 1.16; text-align: right; text-transform: uppercase; overflow-wrap: anywhere; word-break: break-word; }
-  .pdf-body { flex: 1 1 auto; min-height: 0; height: 254.2mm; overflow: hidden; padding: 2.8mm 0 1.3mm; display: flex; flex-direction: column; gap: 0; } .pdf-body.layout-two-column { gap: 1.2mm; } .pdf-footer { flex: 0 0 10.4mm; height: 10.4mm; display: flex; flex-direction: column; justify-content: flex-end; color: #46505a; font-size: 7.2pt; overflow: hidden; }
+  .pdf-body { flex: 1 1 auto; min-height: 0; height: 254.2mm; overflow: hidden; padding: 3.5mm 0 2mm; display: flex; flex-direction: column; gap: 0; } .pdf-body.layout-two-column { gap: 1.2mm; } .pdf-footer { flex: 0 0 10.4mm; height: 10.4mm; display: flex; flex-direction: column; justify-content: flex-end; color: #46505a; font-size: 7.2pt; overflow: hidden; }
   .footer-line { height: 0.24mm; margin-bottom: 1.1mm; background: ${escapeCssColor(template.primaryColor)}; } .footer-row { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 4mm; } .footer-center { text-align: center; } .footer-right { text-align: right; overflow-wrap: anywhere; word-break: break-word; }
-  .page-body-block { break-inside: avoid; page-break-inside: avoid; flex: none; } .page-body-block.full-width-block { width: 100%; } .technical-columns { width: 100%; margin: 0; } .technical-columns-flow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 5.9mm; align-items: start; } .technical-column { min-width: 0; display: flex; flex-direction: column; align-self: start; } .column-flow-group { display: flex; flex-direction: column; gap: 0.55mm; break-inside: avoid; page-break-inside: avoid; } .column-flow-item { break-inside: avoid; page-break-inside: avoid; margin: 0 0 1.8mm; } .column-flow-item:last-child { margin-bottom: 0; } .column-flow-item > *:last-child { margin-bottom: 0; } .figure-block { display: flex; flex-direction: column; gap: 1mm; break-inside: avoid; page-break-inside: avoid; margin: 0 0 1.7mm; }
+  .page-body-block { break-inside: avoid; page-break-inside: avoid; flex: none; } .page-body-block.full-width-block { width: 100%; } .technical-columns { width: 100%; margin: 0; } .technical-columns-flow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6.5mm; align-items: start; } .technical-column { min-width: 0; display: flex; flex-direction: column; align-self: start; } .column-flow-group { display: flex; flex-direction: column; gap: 0.55mm; break-inside: avoid; page-break-inside: avoid; } .column-flow-item { break-inside: avoid; page-break-inside: avoid; margin: 0 0 2.4mm; } .column-flow-item:last-child { margin-bottom: 0; } .column-flow-item > *:last-child { margin-bottom: 0; } .figure-block { display: flex; flex-direction: column; gap: 1mm; break-inside: avoid; page-break-inside: avoid; margin: 0 0 1.7mm; }
   .figure-heading { margin-bottom: 0; } .figure-caption { margin: 0; color: #5c6670; font-size: 6.6pt; line-height: 1.1; text-align: center; overflow-wrap: anywhere; }
   .figure-image-wrap { display: flex; justify-content: center; align-items: center; width: 100%; } .content-image { display: block; width: auto; max-width: 100%; max-height: 104mm; height: auto; margin: 0 auto 0.55mm; object-fit: contain; }
   .content-image.figure-image { margin-bottom: 0; } .figure-image-size-small { max-width: 38%; } .figure-image-size-medium { max-width: 62%; } .figure-image-size-full { width: 100%; max-width: 100%; } .figure-image.figure-image-normal { max-height: 88mm; } .figure-image.figure-image-wide, .figure-image.figure-image-full-width { width: 100%; max-height: 72mm; } .figure-image.figure-image-tall { max-height: 108mm; width: auto; }
-  h1, h2, h3 { display: block; clear: both; color: ${escapeCssColor(template.primaryColor)}; line-height: 1.18; break-after: avoid; page-break-after: avoid; } h1 { margin: 0 0 3mm; font-size: 15.2pt; } h2 { margin: 0 0 2.1mm; font-size: 11.2pt; } h3 { margin: 0 0 1.55mm; font-size: 10pt; }
-  p { margin: 0 0 1.95mm; } hr { border: 0; border-top: 1px solid #c8d0d8; margin: 1.1mm 0 1.8mm; } ul, ol { margin: 0 0 2mm 5mm; padding-left: 4.2mm; } li { margin: 0 0 0.7mm; } a { color: ${escapeCssColor(template.primaryColor)}; text-decoration: underline; } .technical-var { font-weight: 600; white-space: nowrap; }
-  table { width: 100%; max-width: 100%; margin: 0 0 1.95mm; border-collapse: collapse; table-layout: fixed; font-size: 6.9pt; line-height: 1.12; } thead { display: table-header-group; } th, td { border: 1px solid #c8d0d8; padding: 1.35px 2.8px; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; hyphens: auto; } th { background: #edf3f7; color: ${escapeCssColor(template.primaryColor)}; font-weight: 700; letter-spacing: 0.008em; } .technical-table td:first-child, .technical-table th:first-child { width: 36%; } .technical-table-dense { font-size: 6.25pt; line-height: 1.06; } .technical-table-dense td, .technical-table-dense th { padding: 0.95px 2px; }
-  .table-block + .table-block { margin-top: 0.75mm; } .table-review, .table-review-text { border-left: 1mm solid ${escapeCssColor(template.accentColor)}; background: #f7f9fb; padding: 1.8mm 2.6mm; color: #56616b; } .page-break { margin: 0; } strong { font-weight: 700; } em { font-style: italic; } u { text-decoration: underline; } sub, sup { font-size: 70%; line-height: 0; } .pdf-body.layout-two-column.layout-density-technical-dense { padding: 1.3mm 0 0.9mm; gap: 0.5mm; font-size: 7.35pt; line-height: 1.14; } .pdf-body.layout-two-column.layout-density-technical-dense .technical-columns-flow { gap: 3.2mm; } .pdf-body.layout-two-column.layout-density-technical-dense .column-flow-group { gap: 0.28mm; } .pdf-body.layout-two-column.layout-density-technical-dense .column-flow-item { margin: 0 0 0.55mm; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block { gap: 0.35mm; margin: 0 0 0.55mm; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-caption { font-size: 5.85pt; line-height: 1.05; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-wrap { justify-content: center; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-size-small { max-width: 74%; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-size-medium { max-width: 88%; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .content-image { max-height: 33mm; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-size-small.content-image { max-height: 27mm; } .pdf-body.layout-two-column.layout-density-technical-dense h1 { margin: 0 0 2.1mm; font-size: 12.8pt; } .pdf-body.layout-two-column.layout-density-technical-dense h2 { margin: 0 0 1.05mm; font-size: 9.35pt; } .pdf-body.layout-two-column.layout-density-technical-dense h3 { margin: 0 0 0.8mm; font-size: 8.45pt; } .pdf-body.layout-two-column.layout-density-technical-dense p { margin: 0 0 0.95mm; } .pdf-body.layout-two-column.layout-density-technical-dense ul, .pdf-body.layout-two-column.layout-density-technical-dense ol { margin: 0 0 0.95mm 4.2mm; padding-left: 3.8mm; } .pdf-body.layout-two-column.layout-density-technical-dense li { margin: 0 0 0.22mm; } .pdf-body.layout-two-column.layout-density-technical-dense hr { margin: 0.6mm 0 0.95mm; } .pdf-body.layout-two-column.layout-density-technical-dense table { margin: 0 0 0.95mm; font-size: 6.15pt; line-height: 1.08; } .pdf-body.layout-two-column.layout-density-technical-dense th, .pdf-body.layout-two-column.layout-density-technical-dense td { padding: 0.85px 2.1px; } .pdf-body.layout-two-column.layout-density-technical-dense .technical-table-dense { font-size: 5.9pt; line-height: 1.04; } .pdf-body.layout-two-column.layout-density-technical-dense .technical-table-dense td, .pdf-body.layout-two-column.layout-density-technical-dense .technical-table-dense th { padding: 0.75px 1.8px; }
+  h1, h2, h3 { display: block; clear: both; color: ${escapeCssColor(template.primaryColor)}; line-height: 1.18; break-after: avoid; page-break-after: avoid; } h1 { margin: 0 0 4.2mm; font-size: 15.2pt; } h2 { margin: 0 0 3.2mm; font-size: 11.2pt; } h3 { margin: 0 0 2.4mm; font-size: 10pt; }
+  p { margin: 0 0 2.8mm; } hr { border: 0; border-top: 1px solid #c8d0d8; margin: 1.1mm 0 1.8mm; } ul, ol { margin: 0 0 3mm 5mm; padding-left: 4.2mm; } li { margin: 0 0 1.1mm; } a { color: ${escapeCssColor(template.primaryColor)}; text-decoration: underline; } .technical-var { font-weight: 600; white-space: nowrap; }
+  table { width: 100%; max-width: 100%; margin: 0 0 1.95mm; border-collapse: collapse; table-layout: fixed; font-size: 7.6pt; line-height: 1.25; } thead { display: table-header-group; } th, td { border: 1px solid #c8d0d8; padding: 2.2px 4.5px; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; hyphens: auto; } th { padding: 2.6px 5px; background: #edf3f7; color: ${escapeCssColor(template.primaryColor)}; font-weight: 700; letter-spacing: 0.008em; } .technical-table td:first-child, .technical-table th:first-child { width: 36%; } .technical-table-dense { font-size: 6.25pt; line-height: 1.06; } .technical-table-dense td, .technical-table-dense th { padding: 0.95px 2px; }
+  .table-block + .table-block { margin-top: 0.75mm; } .table-review, .table-review-text { border-left: 1mm solid ${escapeCssColor(template.accentColor)}; background: #f7f9fb; padding: 1.8mm 2.6mm; color: #56616b; } .page-break { margin: 0; } strong { font-weight: 700; } em { font-style: italic; } u { text-decoration: underline; } sub, sup { font-size: 70%; line-height: 0; } .pdf-body.layout-two-column.layout-density-technical-dense { padding: 1.3mm 0 0.9mm; gap: 0.5mm; font-size: 8.2pt; line-height: 1.28; } .pdf-body.layout-two-column.layout-density-technical-dense .technical-columns-flow { gap: 4.2mm; } .pdf-body.layout-two-column.layout-density-technical-dense .column-flow-group { gap: 0.28mm; } .pdf-body.layout-two-column.layout-density-technical-dense .column-flow-item { margin: 0 0 1.1mm; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block { gap: 0.35mm; margin: 0 0 0.55mm; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-caption { font-size: 5.85pt; line-height: 1.05; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-wrap { justify-content: center; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-size-small { max-width: 74%; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-size-medium { max-width: 88%; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .content-image { max-height: 33mm; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-size-small.content-image { max-height: 27mm; } .pdf-body.layout-two-column.layout-density-technical-dense h1 { margin: 0 0 3mm; font-size: 12.8pt; } .pdf-body.layout-two-column.layout-density-technical-dense h2 { margin: 0 0 1.8mm; font-size: 9.35pt; } .pdf-body.layout-two-column.layout-density-technical-dense h3 { margin: 0 0 1.3mm; font-size: 8.45pt; } .pdf-body.layout-two-column.layout-density-technical-dense p { margin: 0 0 1.6mm; } .pdf-body.layout-two-column.layout-density-technical-dense ul, .pdf-body.layout-two-column.layout-density-technical-dense ol { margin: 0 0 0.95mm 4.2mm; padding-left: 3.8mm; } .pdf-body.layout-two-column.layout-density-technical-dense li { margin: 0 0 0.55mm; } .pdf-body.layout-two-column.layout-density-technical-dense hr { margin: 0.6mm 0 0.95mm; } .pdf-body.layout-two-column.layout-density-technical-dense table { margin: 0 0 0.95mm; font-size: 6.15pt; line-height: 1.08; } .pdf-body.layout-two-column.layout-density-technical-dense th, .pdf-body.layout-two-column.layout-density-technical-dense td { padding: 1.4px 3.2px; } .pdf-body.layout-two-column.layout-density-technical-dense .technical-table-dense { font-size: 5.9pt; line-height: 1.04; } .pdf-body.layout-two-column.layout-density-technical-dense .technical-table-dense td, .pdf-body.layout-two-column.layout-density-technical-dense .technical-table-dense th { padding: 0.75px 1.8px; }
   </style></head><body class="export-mode-${mode}"><div class="pdf-document">${pageModel.pages.map((page, index) => renderExportPageHtml(page, index, totalPages, template, pageModel)).join("")}</div></body></html>`;
 }
 
@@ -379,14 +380,15 @@ function estimateRenderedColumnFlowHeight(blocks: HtmlBlock[]) {
 
 function splitBlockForRemainingHeight(block: ExportBlock, remainingHeight: number, pageCapacity: number): { placed: ExportBlock; remainder: ExportBlock | null; label: string; reason: string; nextBlockReason: string } | null {
   if (remainingHeight <= 0) return null;
+  const dense = pageCapacity > 235;
   if (block.kind === "table") return splitTableBlockForRemainingHeight(block, remainingHeight);
   if (block.kind !== "html") return null;
-  if (block.role === "paragraph" || block.role === "generic") return splitParagraphBlockForRemainingHeight(block, remainingHeight, pageCapacity);
-  if (block.role === "list") return splitListBlockForRemainingHeight(block, remainingHeight);
+  if (block.role === "paragraph" || block.role === "generic") return splitParagraphBlockForRemainingHeight(block, remainingHeight, pageCapacity, dense);
+  if (block.role === "list") return splitListBlockForRemainingHeight(block, remainingHeight, dense);
   return null;
 }
 
-function splitParagraphBlockForRemainingHeight(block: HtmlBlock, remainingHeight: number, pageCapacity: number) {
+function splitParagraphBlockForRemainingHeight(block: HtmlBlock, remainingHeight: number, pageCapacity: number, dense: boolean) {
   const text = normalizeTechnicalText(block.plainText ?? "").trim();
   if (!text || text.length < 80 || remainingHeight < 18) return null;
   const sentences = splitParagraphTextUnits(text);
@@ -395,25 +397,25 @@ function splitParagraphBlockForRemainingHeight(block: HtmlBlock, remainingHeight
   const initialCount = Math.max(1, Math.min(sentences.length - 1, Math.round((targetHeight / Math.max(block.estimatedHeight, 1)) * sentences.length)));
   const headUnits = sentences.slice(0, initialCount);
   const tailUnits = sentences.slice(initialCount);
-  while (tailUnits.length > 0 && createParagraphFragmentBlock(block, headUnits.join(" ")).estimatedHeight > remainingHeight) {
+  while (tailUnits.length > 0 && createParagraphFragmentBlock(block, headUnits.join(" "), dense).estimatedHeight > remainingHeight) {
     tailUnits.unshift(headUnits.pop() as string);
   }
   if (headUnits.length === 0 || tailUnits.length === 0) return null;
-  const placed = createParagraphFragmentBlock(block, headUnits.join(" "));
-  const remainder = createParagraphFragmentBlock(block, tailUnits.join(" "));
+  const placed = createParagraphFragmentBlock(block, headUnits.join(" "), dense);
+  const remainder = createParagraphFragmentBlock(block, tailUnits.join(" "), dense);
   if (placed.estimatedHeight <= 10 || remainder.estimatedHeight <= 10) return null;
   return { placed, remainder, label: describeDebugBlock(block), reason: "split paragraph to fill page", nextBlockReason: "paragraph remainder moved to next page" };
 }
 
-function splitListBlockForRemainingHeight(block: HtmlBlock, remainingHeight: number) {
+function splitListBlockForRemainingHeight(block: HtmlBlock, remainingHeight: number, dense: boolean) {
   const items = extractListItems(block.html);
   if (items.length < 2 || remainingHeight < 18) return null;
   let fitCount = Math.min(items.length - 1, Math.max(1, Math.floor(remainingHeight / Math.max(block.estimatedHeight / items.length, 4))));
-  while (fitCount > 1 && estimateListFragmentHeight(items.slice(0, fitCount)) > remainingHeight) fitCount -= 1;
+  while (fitCount > 1 && estimateListFragmentHeight(items.slice(0, fitCount), dense) > remainingHeight) fitCount -= 1;
   if (fitCount <= 0 || fitCount >= items.length) return null;
   const tag = block.html.trim().startsWith("<ol") ? "ol" : "ul";
-  const placed = createListFragmentBlock(block, items.slice(0, fitCount), tag);
-  const remainder = createListFragmentBlock(block, items.slice(fitCount), tag);
+  const placed = createListFragmentBlock(block, items.slice(0, fitCount), tag, dense);
+  const remainder = createListFragmentBlock(block, items.slice(fitCount), tag, dense);
   if (remainder.estimatedHeight <= 6) return null;
   return { placed, remainder, label: describeDebugBlock(block), reason: "split list items to fill page", nextBlockReason: "list remainder moved to next page" };
 }
@@ -462,20 +464,26 @@ function splitParagraphTextUnits(text: string) {
   return chunks;
 }
 
-function createParagraphFragmentBlock(block: HtmlBlock, text: string): HtmlBlock {
+function createParagraphFragmentBlock(block: HtmlBlock, text: string, dense: boolean): HtmlBlock {
   const normalized = normalizeTechnicalText(text);
-  return { ...block, html: `<p>${applyTechnicalVariableMarkup(escapeHtml(normalized))}</p>`, plainText: normalized, estimatedHeight: estimatePlainTextHeight(normalized, 148, 4.35, 3.1) };
+  const charsPerLine = dense ? 132 : 112;
+  const lineUnit = dense ? 5.5 : 6.4;
+  const basePad = dense ? 3.8 : 6.9;
+  return { ...block, html: `<p>${applyTechnicalVariableMarkup(escapeHtml(normalized))}</p>`, plainText: normalized, estimatedHeight: estimatePlainTextHeight(normalized, charsPerLine, lineUnit, basePad) };
 }
 
-function createListFragmentBlock(block: HtmlBlock, items: string[], tag: string): HtmlBlock {
+function createListFragmentBlock(block: HtmlBlock, items: string[], tag: string, dense: boolean): HtmlBlock {
   const normalizedItems = items.map((item) => normalizeTechnicalText(item));
   const html = `<${tag}>${normalizedItems.map((item) => `<li>${applyTechnicalVariableMarkup(escapeHtml(item))}</li>`).join("")}</${tag}>`;
-  return { ...block, html, plainText: normalizedItems.join(" "), estimatedHeight: estimateListFragmentHeight(normalizedItems) };
+  return { ...block, html, plainText: normalizedItems.join(" "), estimatedHeight: estimateListFragmentHeight(normalizedItems, dense) };
 }
 
-function estimateListFragmentHeight(items: string[]) {
+function estimateListFragmentHeight(items: string[], dense: boolean) {
   const plainText = items.join(" ");
-  return Math.max(8, 2 + items.length * 5 + Math.ceil(Math.max(plainText.length, 1) / 128) * 2);
+  const base = dense ? 3 : 5;
+  const perItem = dense ? 6 : 9;
+  const charsPerLine = dense ? 115 : 90;
+  return Math.max(dense ? 10 : 14, base + items.length * perItem + Math.ceil(Math.max(plainText.length, 1) / charsPerLine) * 2);
 }
 
 function createTableFragmentBlock(block: TableBlock, start: number, end: number, headerHeight: number): TableBlock {
@@ -817,7 +825,7 @@ function createCompactListBlock(items: string[], layoutOptions: RenderLayoutOpti
   const dense = isTechnicalDense(layoutOptions);
   const itemHtml = items.map((item) => `<li>${applyTechnicalVariableMarkup(escapeHtml(normalizeTechnicalText(item)))}</li>`).join("");
   const plainText = items.join(" ");
-  return { kind: "html", role: "list", html: `<ul>${itemHtml}</ul>`, estimatedHeight: Math.max(dense ? 8 : 12, (dense ? 2 : 4) + items.length * (dense ? 5 : 8) + Math.ceil(plainText.length / (dense ? 128 : 90)) * 2), meaningful: true, plainText, columnEligible: true, fullWidth: false };
+  return { kind: "html", role: "list", html: `<ul>${itemHtml}</ul>`, estimatedHeight: Math.max(dense ? 10 : 14, (dense ? 3 : 5) + items.length * (dense ? 6 : 9) + Math.ceil(plainText.length / (dense ? 115 : 90)) * 2), meaningful: true, plainText, columnEligible: true, fullWidth: false };
 }
 
 function groupFigureBlocks(blocks: ExportBlock[]) {
@@ -876,7 +884,7 @@ function createListBlocks(node: Record<string, unknown>, tag: "ul" | "ol", layou
   if (!itemHtml) return [];
   const dense = isTechnicalDense(layoutOptions);
   const plainText = normalizeTechnicalText(items.map(getPlainText).join(" ").replace(/\s+/g, " ").trim());
-  return [{ kind: "html", role: "list", html: `<${tag}>${itemHtml}</${tag}>`, estimatedHeight: Math.max(dense ? 8 : 12, (dense ? 2 : 4) + items.length * (dense ? 5 : 8) + Math.ceil(plainText.length / (dense ? 128 : 90)) * 2), meaningful: true, plainText, columnEligible: true, fullWidth: false }];
+  return [{ kind: "html", role: "list", html: `<${tag}>${itemHtml}</${tag}>`, estimatedHeight: Math.max(dense ? 10 : 14, (dense ? 3 : 5) + items.length * (dense ? 6 : 9) + Math.ceil(plainText.length / (dense ? 115 : 90)) * 2), meaningful: true, plainText, columnEligible: true, fullWidth: false }];
 }
 
 function splitTableIntoBlocks(node: Record<string, unknown>, layoutOptions: RenderLayoutOptions): ExportBlock[] {
@@ -884,7 +892,7 @@ function splitTableIntoBlocks(node: Record<string, unknown>, layoutOptions: Rend
   if (rows.length === 0) return [];
   const [headerRow, ...bodyRows] = rows;
   const dense = isTechnicalDense(layoutOptions);
-  const headerHeight = dense ? 10 : 14;
+  const headerHeight = dense ? 12 : 16;
   const headerHtml = renderTableRow(headerRow, true);
   const rowHtml = bodyRows.map((row) => renderTableRow(row, false));
   const rowHeights = bodyRows.map((row) => estimateTableRowHeight(row, layoutOptions));
@@ -899,7 +907,7 @@ function splitTableIntoBlocks(node: Record<string, unknown>, layoutOptions: Rend
   let currentHeights: number[] = [];
   let currentHeight = headerHeight;
   for (let index = 0; index < rowHtml.length; index += 1) {
-    const nextHeight = rowHeights[index] ?? (dense ? 10 : 12);
+    const nextHeight = rowHeights[index] ?? (dense ? 8 : 14);
     const remainingRows = rowHtml.length - index;
     const shouldSplit = currentRows.length >= MIN_TABLE_ROWS_PER_SEGMENT && currentHeight + nextHeight > segmentTargetHeight && remainingRows >= MIN_TABLE_ROWS_PER_SEGMENT;
     if (shouldSplit || currentHeight + nextHeight > maxSegmentHeight) {
@@ -1027,11 +1035,11 @@ function isFigureCaptionBlock(block: ExportBlock | undefined): block is HtmlBloc
 function isFigureHeadingBlock(block: ExportBlock | undefined): block is HtmlBlock { return Boolean(block && block.kind === "html" && block.role === "heading"); }
 function stripOuterParagraph(html: string) { return html.replace(/^<p[^>]*>/, "").replace(/<\/p>$/, ""); }
 function isMeaningfulBlock(block: ExportBlock) { return block.kind === "break" ? false : block.kind === "table" ? block.rowHtml.length > 0 : Boolean(block.meaningful && (block.plainText?.trim() || block.role === "image" || block.role === "figure")); }
-function estimateParagraphHeight(node: Record<string, unknown>, attrs: Record<string, unknown>, layoutOptions: RenderLayoutOptions) { const text = normalizeTechnicalText(getPlainText(node).replace(/\s+/g, " ").trim()); const dense = isTechnicalDense(layoutOptions); const base = estimatePlainTextHeight(text, dense ? 148 : 112, dense ? 4.35 : 6, dense ? 3.1 : 6); return attrs.class === "image-caption" || looksLikeFigureCaption(text) ? Math.max(dense ? 5.9 : 10, base - (dense ? 2.3 : 2)) : base; }
-function estimateHeadingHeight(node: Record<string, unknown>, attrs: Record<string, unknown>, layoutOptions: RenderLayoutOptions) { const text = normalizeTechnicalText(getPlainText(node).replace(/\s+/g, " ").trim()); const level = headingLevel(attrs); const dense = isTechnicalDense(layoutOptions); const perLine = level === 1 ? (dense ? 12.8 : 18) : level === 2 ? (dense ? 8.8 : 14) : (dense ? 7.9 : 12); const charsPerLine = level === 1 ? (dense ? 48 : 36) : dense ? 62 : 48; return Math.max(perLine, Math.ceil(Math.max(text.length, 1) / charsPerLine) * perLine + (dense ? 0.6 : 2)); }
+function estimateParagraphHeight(node: Record<string, unknown>, attrs: Record<string, unknown>, layoutOptions: RenderLayoutOptions) { const text = normalizeTechnicalText(getPlainText(node).replace(/\s+/g, " ").trim()); const dense = isTechnicalDense(layoutOptions); const base = estimatePlainTextHeight(text, dense ? 132 : 112, dense ? 5.5 : 6.4, dense ? 3.8 : 6.9); return attrs.class === "image-caption" || looksLikeFigureCaption(text) ? Math.max(dense ? 6.8 : 11.5, base - (dense ? 2.7 : 2.5)) : base; }
+function estimateHeadingHeight(node: Record<string, unknown>, attrs: Record<string, unknown>, layoutOptions: RenderLayoutOptions) { const text = normalizeTechnicalText(getPlainText(node).replace(/\s+/g, " ").trim()); const level = headingLevel(attrs); const dense = isTechnicalDense(layoutOptions); const perLine = level === 1 ? (dense ? 14.5 : 19.2) : level === 2 ? (dense ? 10.2 : 15.1) : (dense ? 9.2 : 12.9); const charsPerLine = level === 1 ? (dense ? 43 : 36) : dense ? 55 : 48; return Math.max(perLine, Math.ceil(Math.max(text.length, 1) / charsPerLine) * perLine + (dense ? 0.9 : 2.5)); }
 function estimateImageHeight(image: Pick<ImageMeta, "width" | "height" | "aspectRatio" | "variantClass" | "displaySize">, layoutOptions: RenderLayoutOptions, columnEligible = false) { const dense = isTechnicalDense(layoutOptions); const scale = image.displaySize === "small" ? (columnEligible ? 0.52 : 0.38) : image.displaySize === "full" ? 1 : (columnEligible ? 0.78 : 0.62); const maxWidth = columnEligible ? COLUMN_IMAGE_MAX_WIDTH : IMAGE_MAX_WIDTH; const maxHeight = columnEligible ? (dense ? (image.displaySize === "small" ? 28 : 36) : 52) : (dense ? PAGE_BODY_IMAGE_MAX_DENSE : PAGE_BODY_IMAGE_MAX); if (image.aspectRatio && image.aspectRatio > 0) { const projected = (maxWidth * scale) / image.aspectRatio; const adjusted = image.variantClass === "figure-image-tall" ? Math.min(projected, maxHeight) : Math.min(projected + (columnEligible ? 0.6 : 3), maxHeight); return Math.max(columnEligible ? 12 : 20, adjusted); } if (image.width && image.height && image.height > 0) return Math.max(columnEligible ? 12 : 20, Math.min((maxWidth * scale * image.height) / image.width, maxHeight)); return columnEligible ? 20 : image.displaySize === "small" ? 34 : 52; }
 function estimatePlainTextHeight(text: string, charsPerLine: number, lineUnit = 6, basePad = 6) { const normalized = text.replace(/\s+/g, " ").trim(); if (!normalized) return 0; const lines = Math.max(1, Math.ceil(normalized.length / charsPerLine)); return basePad + lines * lineUnit; }
-function estimateTableRowHeight(row: Record<string, unknown>, layoutOptions: RenderLayoutOptions) { const text = normalizeTechnicalText(getPlainText(row).replace(/\s+/g, " ").trim()); const dense = isTechnicalDense(layoutOptions); return Math.max(dense ? 5.8 : 12, (dense ? 3.2 : 8) + Math.ceil(Math.max(text.length, 1) / (dense ? 88 : 48)) * (dense ? 2.6 : 5)); }
+function estimateTableRowHeight(row: Record<string, unknown>, layoutOptions: RenderLayoutOptions) { const text = normalizeTechnicalText(getPlainText(row).replace(/\s+/g, " ").trim()); const dense = isTechnicalDense(layoutOptions); const minVal = dense ? 7.2 : 14.5; const baseVal = dense ? 4.5 : 9.5; const charsPerLine = dense ? 78 : 44; const lineCoef = dense ? 3.2 : 6; return Math.max(minVal, baseVal + Math.ceil(Math.max(text.length, 1) / charsPerLine) * lineCoef); }
 function tableVariantClass(columnCount: number, plainText: string, layoutOptions: RenderLayoutOptions) { const dense = layoutOptions.layoutDensity === "technical-dense" || columnCount >= 4 || plainText.length > 280; return dense ? "technical-table technical-table-dense" : "technical-table"; }
 function shouldRenderImageInColumn(image: ImageMeta, surroundingText: string) {
   const label = `${image.alt} ${surroundingText}`.toLowerCase();

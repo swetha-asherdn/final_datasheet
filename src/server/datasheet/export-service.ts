@@ -1,4 +1,4 @@
-﻿import { readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { Types } from "mongoose";
 import { AppError } from "@/lib/errors";
@@ -420,7 +420,7 @@ export async function renderHtmlToPdf(html: string) {
   });
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 1240, height: 1754, deviceScaleFactor: 1 });
+    await page.setViewport({ width: 1240, height: 1754, deviceScaleFactor: 2 });
     await page.setContent(html, { waitUntil: "load" });
     await page.waitForNetworkIdle({ idleTime: 500, timeout: 5000 }).catch(() => undefined);
     await page.emulateMediaType("print");
@@ -456,7 +456,7 @@ export async function measureRenderedExportHtmlLayout(html: string) {
   });
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 1240, height: 1754, deviceScaleFactor: 1 });
+    await page.setViewport({ width: 1240, height: 1754, deviceScaleFactor: 2 });
     await page.setContent(html, { waitUntil: "load" });
     await page.waitForNetworkIdle({ idleTime: 500, timeout: 5000 }).catch(() => undefined);
     await page.emulateMediaType("print");

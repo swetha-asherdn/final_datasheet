@@ -1,4 +1,4 @@
-﻿import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildExportPageModel,
   paginateExportBlocks,
@@ -542,9 +542,9 @@ describe("export renderer", () => {
     expect(html).toContain("layout-two-column");
     expect(html).toContain("layout-density-technical-dense");
     expect(html).toContain("technical-columns-flow");
-    expect(html).toContain(".pdf-body.layout-two-column.layout-density-technical-dense .technical-columns-flow { gap: 3.2mm; }");
-    expect(html).toContain("font-size: 7.35pt;");
-    expect(html).toContain("line-height: 1.14;");
+    expect(html).toContain(".pdf-body.layout-two-column.layout-density-technical-dense .technical-columns-flow { gap: 4.2mm; }");
+    expect(html).toContain("font-size: 8.2pt;");
+    expect(html).toContain("line-height: 1.28;");
     expect(html).toContain("class=\"page-body-block table-block\"");
     expect(html).toContain("figure-image");
   });
