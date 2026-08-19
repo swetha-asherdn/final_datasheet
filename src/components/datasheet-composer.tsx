@@ -17,7 +17,7 @@ import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
 import { EditorContent, useEditor, type JSONContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { ArrowDown, ArrowUp, Bold, Download, ExternalLink, EyeOff, FileDown, FilePlus2, Heading1, Heading2, ImageIcon, Italic, List, ListOrdered, Maximize2, RefreshCcw, Save, SplitSquareVertical, SubscriptIcon, SuperscriptIcon, Table2, UnderlineIcon } from "lucide-react";
+import { ArrowDown, ArrowUp, Bold, Bot, Download, ExternalLink, Eye, EyeOff, FileDown, FilePlus2, Heading1, Heading2, ImageIcon, Italic, List, ListOrdered, Maximize2, Plus, RefreshCcw, Save, Sparkles, SplitSquareVertical, SubscriptIcon, SuperscriptIcon, Table2, Trash, UnderlineIcon, X } from "lucide-react";
 import { ExtractionReview } from "@/components/extraction-review";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -540,7 +540,7 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
       {tab !== "extraction" && loadState === "loading" ? <ComposerState label="Loading editable datasheet..." /> : null}
       {tab !== "extraction" && loadState === "missing" ? <CreateDatasheetPanel canCreate={canCreate} isPending={isPending} onCreate={createDatasheet} /> : null}
       {tab !== "extraction" && loadState === "failed" ? <ComposerState label="Datasheet composer could not be loaded." /> : null}
-      {tab === "editor" && bundle ? <DatasheetEditor bundle={bundle} saveState={saveState} saveError={saveError} onDirtyChange={setHasUnsavedEditorChanges} onTemplateDirtyChange={setHasUnsavedTemplateChanges} onSave={saveDocument} onTemplateSave={saveTemplate} onOpenPagedLayout={() => setTab("paged-layout")} /> : null}
+      {tab === "editor" && bundle ? <DatasheetEditor projectId={projectId} bundle={bundle} saveState={saveState} saveError={saveError} onDirtyChange={setHasUnsavedEditorChanges} onTemplateDirtyChange={setHasUnsavedTemplateChanges} onSave={saveDocument} onTemplateSave={saveTemplate} onOpenPagedLayout={() => setTab("paged-layout")} onRegenerate={regenerateDatasheet} onSwitchToExtraction={() => setTab("extraction")} /> : null}
       {tab === "paged-layout" && bundle ? <PagedLayoutEditorPanel bundle={bundle} layout={layout} layoutState={layoutState} layoutSaveState={layoutSaveState} layoutError={layoutError} hasUnsavedChanges={hasUnsavedChanges} onGenerate={() => generateLayout()} onSave={(nextLayout) => persistLayoutPatch({ pages: nextLayout.pages, warnings: nextLayout.warnings, exportMode: nextLayout.exportMode })} onReset={resetLayout} onModeChange={applyExportMode} /> : null}
       {tab === "paged-preview" && bundle ? <PagedPreviewPanel projectId={projectId} bundle={bundle} previewVersion={previewVersion} hasUnsavedChanges={hasUnsavedChanges} previewMode={previewMode} layoutState={layoutState} onModeChange={applyExportMode} onGenerateLayout={() => generateLayout()} onRefresh={() => setPreviewVersion((current) => current + 1)} /> : null}
       {tab === "template" && bundle ? <TemplatePanel template={bundle.template} saveState={saveState} saveError={saveError} onDirtyChange={setHasUnsavedTemplateChanges} onSave={saveTemplate} /> : null}
@@ -555,7 +555,7 @@ function regenerateSummaryMessage(summary?: DatasheetQualitySummary) {
   return `Editable datasheet regenerated: ${summary.sectionsDetected} sections, ${summary.tablesDetected} tables, ${summary.figuresDetected} figures, ${summary.warningsCount} warnings, ${summary.unresolvedSymbolsCount} unresolved symbols.`;
 }
 
-function DatasheetEditor({ bundle, saveState, saveError, onDirtyChange, onTemplateDirtyChange, onSave, onTemplateSave, onOpenPagedLayout }: { bundle: DatasheetBundle; saveState: SaveState; saveError: string | null; onDirtyChange: (dirty: boolean) => void; onTemplateDirtyChange: (dirty: boolean) => void; onSave: (input: Partial<DatasheetDocument>) => Promise<boolean>; onTemplateSave: (input: Partial<TemplateSettings>) => Promise<boolean>; onOpenPagedLayout: () => void }) {
+function DatasheetEditor({ projectId, bundle, saveState, saveError, onDirtyChange, onTemplateDirtyChange, onSave, onTemplateSave, onOpenPagedLayout, onRegenerate, onSwitchToExtraction }: { projectId: string; bundle: DatasheetBundle; saveState: SaveState; saveError: string | null; onDirtyChange: (dirty: boolean) => void; onTemplateDirtyChange: (dirty: boolean) => void; onSave: (input: Partial<DatasheetDocument>) => Promise<boolean>; onTemplateSave: (input: Partial<TemplateSettings>) => Promise<boolean>; onOpenPagedLayout: () => void; onRegenerate?: () => void; onSwitchToExtraction?: () => void }) {
   const [title, setTitle] = useState(bundle.document.title);
   const [productCode, setProductCode] = useState(bundle.document.productCode);
   const [productCategory, setProductCategory] = useState(bundle.document.productCategory);
@@ -563,6 +563,162 @@ function DatasheetEditor({ bundle, saveState, saveError, onDirtyChange, onTempla
   const [editorDoc, setEditorDoc] = useState<JSONContent>(ensureEditorJsonHasBlockIds(bundle.document.editorJson));
   const [selectionVersion, setSelectionVersion] = useState(0);
   const autosaveTimerRef = useRef<number | null>(null);
+  const [templateDraft, setTemplateDraft] = useState({
+    layoutMode: bundle.template.layoutMode,
+    layoutDensity: bundle.template.layoutDensity,
+    pageFillStrategy: bundle.template.pageFillStrategy,
+  });
+  const [previewMode, setPreviewMode] = useState(false);
+
+  // BRAND CLEANUP AND LIVE PREVIEW STATES
+  const [showLivePreview, setShowLivePreview] = useState(false);
+  const [previewVersion, setPreviewVersion] = useState(0);
+  const [brandText, setBrandText] = useState("");
+  const [purging, setPurging] = useState(false);
+
+  useEffect(() => {
+    setTemplateDraft({
+      layoutMode: bundle.template.layoutMode,
+      layoutDensity: bundle.template.layoutDensity,
+      pageFillStrategy: bundle.template.pageFillStrategy,
+    });
+  }, [bundle.template.layoutMode, bundle.template.layoutDensity, bundle.template.pageFillStrategy]);
+
+  async function updateLayoutSetting<K extends keyof typeof templateDraft>(key: K, value: (typeof templateDraft)[K]) {
+    const next = { ...templateDraft, [key]: value };
+    setTemplateDraft(next);
+    onTemplateDirtyChange(true);
+    await onTemplateSave(next);
+    setPreviewVersion((v) => v + 1); // Trigger preview refresh
+  }
+
+  function escapeRegExp(string: string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  async function handlePurgeBrandText() {
+    if (!editor || !brandText.trim()) return;
+    setPurging(true);
+    const docJson = editor.getJSON();
+    const brandRegex = new RegExp(escapeRegExp(brandText.trim()), "gi");
+    let count = 0;
+    function traverseAndReplace(node: any) {
+      if (node.type === "text" && typeof node.text === "string") {
+        const original = node.text;
+        node.text = node.text.replace(brandRegex, () => {
+          count++;
+          return "";
+        });
+      }
+      if (Array.isArray(node.content)) {
+        node.content.forEach(traverseAndReplace);
+      }
+    }
+    traverseAndReplace(docJson);
+
+    if (count > 0) {
+      editor.commands.setContent(docJson);
+      markEditorDirty();
+      await onSave({ title, productCode, productCategory, editorJson: ensureEditorJsonHasBlockIds(docJson), status: "EDITING" });
+      setPreviewVersion((v) => v + 1);
+      alert(`Successfully removed ${count} occurrences of "${brandText.trim()}".`);
+    } else {
+      alert(`No occurrences of "${brandText.trim()}" found in the editor.`);
+    }
+    setPurging(false);
+    setBrandText("");
+  }
+
+  async function handlePurgeAllImages() {
+    if (!editor) return;
+    const confirmed = window.confirm("Are you sure you want to delete all images from the editor canvas? This will strip competitor diagrams and logos.");
+    if (!confirmed) return;
+
+    const docJson = editor.getJSON();
+    let count = 0;
+    function removeImageNodes(node: any): any {
+      if (Array.isArray(node.content)) {
+        node.content = node.content.filter((child: any) => {
+          if (child.type === "image") {
+            count++;
+            return false;
+          }
+          if (child.type === "paragraph" && child.attrs?.class === "image-caption") {
+            return false;
+          }
+          return true;
+        });
+        node.content.forEach(removeImageNodes);
+      }
+      return node;
+    }
+    removeImageNodes(docJson);
+
+    if (count > 0) {
+      editor.commands.setContent(docJson);
+      markEditorDirty();
+      await onSave({ title, productCode, productCategory, editorJson: ensureEditorJsonHasBlockIds(docJson), status: "EDITING" });
+      setPreviewVersion((v) => v + 1);
+      alert(`Removed ${count} images/figures from the editor.`);
+    } else {
+      alert("No images found in the editor.");
+    }
+  }
+
+  async function handleBulkCleanUncertain() {
+    if (!editor) return;
+    const uncertain = bundle.document.sourceCleanupReport?.uncertainItems ?? [];
+    if (uncertain.length === 0) {
+      alert("No uncertain cleanup items found.");
+      return;
+    }
+    const confirmed = window.confirm(`Remove all ${uncertain.length} uncertain brand text blocks and logo images from the editor?`);
+    if (!confirmed) return;
+
+    const docJson = editor.getJSON();
+    let textCount = 0;
+    let imageCount = 0;
+    const uncertainTexts = new Set(uncertain.filter(item => item.itemType === "text" && item.text).map(item => item.text!.trim()));
+    const uncertainImageIds = new Set(uncertain.filter(item => item.itemType === "image").map(item => item.id));
+
+    function filterUncertainNodes(node: any): any {
+      if (Array.isArray(node.content)) {
+        node.content = node.content.filter((child: any) => {
+          if (child.type === "image") {
+            const src = child.attrs?.src ?? "";
+            const match = src.match(/\/images\/([^/]+)/);
+            const imageId = match ? decodeURIComponent(match[1]) : "";
+            if (uncertainImageIds.has(imageId) || uncertainImageIds.has(child.attrs?.title)) {
+              imageCount++;
+              return false;
+            }
+          }
+          if (child.type === "paragraph" || child.type === "heading") {
+            const textContent = extractPlainTextFromJson(child).trim();
+            if (uncertainTexts.has(textContent)) {
+              textCount++;
+              return false;
+            }
+          }
+          return true;
+        });
+        node.content.forEach(filterUncertainNodes);
+      }
+      return node;
+    }
+    filterUncertainNodes(docJson);
+
+    if (textCount > 0 || imageCount > 0) {
+      editor.commands.setContent(docJson);
+      markEditorDirty();
+      await onSave({ title, productCode, productCategory, editorJson: ensureEditorJsonHasBlockIds(docJson), status: "EDITING" });
+      setPreviewVersion((v) => v + 1);
+      alert(`Bulk removed ${textCount} text blocks and ${imageCount} images.`);
+    } else {
+      alert("No matching uncertain items found in the current editor content.");
+    }
+  }
+
   const editor = useEditor({
     immediatelyRender: false,
     extensions: editorExtensions,
@@ -575,7 +731,7 @@ function DatasheetEditor({ bundle, saveState, saveError, onDirtyChange, onTempla
       onDirtyChange(true);
     },
     onSelectionUpdate: () => setSelectionVersion((current) => current + 1),
-    editorProps: { attributes: { class: "datasheet-editor-surface min-h-[780px] bg-white px-8 py-9 text-[13px] leading-6 text-slate-800 outline-none [&_a]:text-blue-700 [&_a]:underline [&_caption]:text-xs [&_h1]:mb-4 [&_h1]:mt-2 [&_h1]:text-[22px] [&_h1]:font-bold [&_h1]:leading-tight [&_h1]:text-[#0D2B55] [&_h2]:mb-3 [&_h2]:mt-5 [&_h2]:text-[17px] [&_h2]:font-bold [&_h2]:leading-tight [&_h2]:text-[#0D2B55] [&_h3]:mb-2 [&_h3]:mt-4 [&_h3]:text-[14px] [&_h3]:font-bold [&_h3]:text-[#0D2B55] [&_li]:my-1 [&_ol]:mb-4 [&_ol]:ml-7 [&_ol]:list-decimal [&_p.image-caption]:text-center [&_p.image-caption]:text-xs [&_p.image-caption]:text-slate-500 [&_p]:mb-3 [&_table]:my-4 [&_table]:w-full [&_table]:border-collapse [&_table]:text-xs [&_td]:border [&_td]:border-slate-300 [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top [&_th]:border [&_th]:border-slate-300 [&_th]:bg-slate-100 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_th]:text-[#0D2B55] [&_ul]:mb-4 [&_ul]:ml-7 [&_ul]:list-disc [&_.ProseMirror-selectednode]:ring-2 [&_.ProseMirror-selectednode]:ring-[#D6533E] [&_.datasheet-editor-image]:mx-auto [&_.datasheet-editor-image]:block [&_.datasheet-editor-image]:h-auto [&_.datasheet-editor-image]:max-w-full [&_.datasheet-editor-image-small]:w-[45%] [&_.datasheet-editor-image-medium]:w-[72%] [&_.datasheet-editor-image-full]:w-full [&_[data-keep-with-next='true']]:border-l-2 [&_[data-keep-with-next='true']]:border-amber-300 [&_[data-keep-with-next='true']]:pl-3 [&_[data-page-break-before='true']]:border-t-2 [&_[data-page-break-before='true']]:border-dashed [&_[data-page-break-before='true']]:border-sky-300 [&_[data-page-break-before='true']]:pt-3 [&_[data-hidden-from-export='true']]:opacity-50 [&_[data-hidden-from-export='true']]:grayscale [&_.page-break]:my-7 [&_.page-break]:flex [&_.page-break]:items-center [&_.page-break]:gap-3 [&_.page-break]:border-t-2 [&_.page-break]:border-dashed [&_.page-break]:border-slate-300 [&_.page-break]:text-xs [&_.page-break]:font-semibold [&_.page-break]:uppercase [&_.page-break]:tracking-wide [&_.page-break]:text-slate-400" } }
+    editorProps: { attributes: { class: "datasheet-editor-surface min-h-[780px] bg-white px-8 py-9 text-[10pt] leading-[1.52] text-[#1f2933] outline-none font-[Segoe_UI,Arial,Noto_Sans,Helvetica,sans-serif] [&_a]:text-[#0D2B55] [&_a]:underline [&_caption]:text-xs [&_h1]:mb-[4.2mm] [&_h1]:mt-2 [&_h1]:text-[15.2pt] [&_h1]:font-bold [&_h1]:leading-[1.18] [&_h1]:text-[#0D2B55] [&_h2]:mb-[3.2mm] [&_h2]:mt-5 [&_h2]:text-[11.2pt] [&_h2]:font-bold [&_h2]:leading-[1.18] [&_h2]:text-[#0D2B55] [&_h3]:mb-[2.4mm] [&_h3]:mt-4 [&_h3]:text-[10pt] [&_h3]:font-bold [&_h3]:text-[#0D2B55] [&_li]:my-[1.1mm] [&_ol]:mb-[3mm] [&_ol]:ml-[5mm] [&_ol]:list-decimal [&_ol]:pl-[4.2mm] [&_p.image-caption]:text-center [&_p.image-caption]:text-[6.6pt] [&_p.image-caption]:leading-[1.1] [&_p.image-caption]:text-[#5c6670] [&_p]:mb-[2.8mm] [&_table]:my-[1.95mm] [&_table]:w-full [&_table]:border-collapse [&_table]:table-fixed [&_table]:text-[7.6pt] [&_table]:leading-[1.25] [&_td]:border [&_td]:border-[#c8d0d8] [&_td]:px-[4.5px] [&_td]:py-[2.2px] [&_td]:align-top [&_td]:break-words [&_th]:border [&_th]:border-[#c8d0d8] [&_th]:bg-[#edf3f7] [&_th]:px-[5px] [&_th]:py-[2.6px] [&_th]:text-left [&_th]:font-bold [&_th]:tracking-[0.008em] [&_th]:text-[#0D2B55] [&_ul]:mb-[3mm] [&_ul]:ml-[5mm] [&_ul]:list-disc [&_ul]:pl-[4.2mm] [&_hr]:border-0 [&_hr]:border-t [&_hr]:border-[#c8d0d8] [&_hr]:my-[1.5mm] [&_.ProseMirror-selectednode]:ring-2 [&_.ProseMirror-selectednode]:ring-[#D6533E] [&_.datasheet-editor-image]:mx-auto [&_.datasheet-editor-image]:block [&_.datasheet-editor-image]:h-auto [&_.datasheet-editor-image]:max-w-full [&_.datasheet-editor-image-small]:w-[45%] [&_.datasheet-editor-image-medium]:w-[72%] [&_.datasheet-editor-image-full]:w-full [&_[data-keep-with-next='true']]:border-l-2 [&_[data-keep-with-next='true']]:border-amber-300 [&_[data-keep-with-next='true']]:pl-3 [&_[data-page-break-before='true']]:border-t-2 [&_[data-page-break-before='true']]:border-dashed [&_[data-page-break-before='true']]:border-sky-300 [&_[data-page-break-before='true']]:pt-3 [&_[data-hidden-from-export='true']]:opacity-50 [&_[data-hidden-from-export='true']]:grayscale [&_.page-break]:my-7 [&_.page-break]:flex [&_.page-break]:items-center [&_.page-break]:gap-3 [&_.page-break]:border-t-2 [&_.page-break]:border-dashed [&_.page-break]:border-slate-300 [&_.page-break]:text-xs [&_.page-break]:font-semibold [&_.page-break]:uppercase [&_.page-break]:tracking-wide [&_.page-break]:text-slate-400" } }
   });
 
   const selectedBlock = useMemo(() => editor ? getSelectedBlockState(editor) : null, [editor, selectionVersion]);
@@ -598,7 +754,10 @@ function DatasheetEditor({ bundle, saveState, saveError, onDirtyChange, onTempla
     if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
     autosaveTimerRef.current = window.setTimeout(() => {
       void onSave({ title, productCode, productCategory, editorJson: ensureEditorJsonHasBlockIds(editor.getJSON()), status: "EDITING" }).then((saved) => {
-        if (saved) setDirty(false);
+        if (saved) {
+          setDirty(false);
+          setPreviewVersion((v) => v + 1); // Refresh preview iframe
+        }
       });
     }, 1600);
     return () => {
@@ -619,6 +778,7 @@ function DatasheetEditor({ bundle, saveState, saveError, onDirtyChange, onTempla
     if (saved) {
       setDirty(false);
       onDirtyChange(false);
+      setPreviewVersion((v) => v + 1); // Refresh preview iframe
     }
   }
 
@@ -628,6 +788,8 @@ function DatasheetEditor({ bundle, saveState, saveError, onDirtyChange, onTempla
     if (editor) setEditorDoc(ensureEditorJsonHasBlockIds(editor.getJSON()));
   }
 
+  const previewSrc = "/api/projects/" + projectId + "/datasheet/export/preview?v=" + previewVersion + "&saved=" + encodeURIComponent(bundle.document.lastSavedAt) + "&mode=auto";
+
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
       <Card>
@@ -636,17 +798,148 @@ function DatasheetEditor({ bundle, saveState, saveError, onDirtyChange, onTempla
             <CardTitle>Datasheet Editor</CardTitle>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <SaveStatus dirty={dirty} saveState={saveState} saveError={saveError} />
+              {onRegenerate ? (
+                <Button type="button" variant="outline" size="sm" onClick={onRegenerate} title="Re-populate the editor canvas from the latest extraction run">
+                  <RefreshCcw size={14} className="text-amber-600" />
+                  Regenerate from Extraction
+                </Button>
+              ) : null}
+              {onSwitchToExtraction ? (
+                <Button type="button" variant="outline" size="sm" className="border-purple-300 text-purple-700 hover:bg-purple-50" onClick={onSwitchToExtraction} title="Switch to extraction review to extract with Google Document AI">
+                  <Bot size={14} />
+                  Google AI Extraction
+                </Button>
+              ) : null}
               <Button type="button" size="sm" onClick={saveNow} disabled={saveState === "saving"}><Save size={15} />Save</Button>
+              <Button type="button" variant={previewMode ? "default" : "outline"} size="sm" onClick={() => { setPreviewMode((c) => !c); if (editor) editor.setEditable(previewMode); }}>{previewMode ? "Edit Mode" : "Preview Mode"}</Button>
+              <Button type="button" variant={showLivePreview ? "default" : "outline"} size="sm" onClick={() => setShowLivePreview((c) => !c)}><Eye size={15} />{showLivePreview ? "Hide Live PDF" : "Show Live PDF"}</Button>
             </div>
           </div>
           <p className="text-sm text-muted-foreground">Edit the datasheet body on a document canvas. Header and footer fields can be adjusted in the panel beside it. Layout: {layoutModeLabel(bundle.template.layoutMode)}. Density: {layoutDensityLabel(bundle.template.layoutDensity)}. Fill strategy: {pageFillStrategyLabel(bundle.template.pageFillStrategy)}.</p>
         </CardHeader>
         <CardContent className="space-y-3">
-          <EditorToolbar editor={editor} selectedBlock={selectedBlock} onMutate={markEditorDirty} onOpenPagedLayout={onOpenPagedLayout} />
-          <div data-testid="editor-workspace" className="overflow-auto rounded-md border bg-slate-200 px-3 py-5 sm:px-6 lg:px-8"><div data-testid="editor-document-canvas" className="mx-auto min-h-[920px] w-full max-w-[794px] rounded-sm border border-slate-300 bg-white shadow-lg"><EditorContent editor={editor} /></div></div><style>{`.datasheet-editor-surface .page-break::before,.datasheet-editor-surface .page-break::after{content:"";height:1px;flex:1;background:#cbd5e1}.datasheet-editor-surface .page-break-label{border:1px solid #cbd5e1;border-radius:999px;background:#f8fafc;padding:2px 10px}.datasheet-editor-surface [data-keep-with-next='true']{position:relative}.datasheet-editor-surface [data-keep-with-next='true']::before{content:"Keep with next";display:inline-block;margin-right:8px;border-radius:999px;background:#fef3c7;color:#92400e;padding:1px 7px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.02em}.datasheet-editor-surface [data-hidden-from-export='true']::after{content:"Hidden from export";display:inline-block;margin-left:8px;border-radius:999px;background:#e2e8f0;color:#334155;padding:1px 7px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.02em}`}</style>
+          <EditorToolbar projectId={projectId} editor={editor} selectedBlock={selectedBlock} onMutate={markEditorDirty} onOpenPagedLayout={onOpenPagedLayout} />
+          <CodeReplacePanel editor={editor} onMutate={markEditorDirty} />
+          <div className="flex flex-wrap items-center gap-3 rounded-md border bg-slate-50 px-3 py-2 text-xs">
+            <span className="font-semibold text-slate-700">Layout:</span>
+            <div className="flex gap-1">
+              <Button type="button" variant={templateDraft.layoutMode === "two-column" ? "default" : "outline"} size="sm" onClick={() => void updateLayoutSetting("layoutMode", "two-column")}><SplitSquareVertical size={14} />Two Column</Button>
+              <Button type="button" variant={templateDraft.layoutMode === "single-column" ? "default" : "outline"} size="sm" onClick={() => void updateLayoutSetting("layoutMode", "single-column")}>Single Column</Button>
+            </div>
+            <span className="font-semibold text-slate-700">Density:</span>
+            <div className="flex gap-1">
+              <Button type="button" variant={templateDraft.layoutDensity === "technical-dense" ? "default" : "outline"} size="sm" onClick={() => void updateLayoutSetting("layoutDensity", "technical-dense")}>Dense</Button>
+              <Button type="button" variant={templateDraft.layoutDensity === "comfortable" ? "default" : "outline"} size="sm" onClick={() => void updateLayoutSetting("layoutDensity", "comfortable")}>Comfortable</Button>
+            </div>
+            <span className="font-semibold text-slate-700">Fill:</span>
+            <div className="flex gap-1">
+              <Button type="button" variant={templateDraft.pageFillStrategy === "safe" ? "default" : "outline"} size="sm" onClick={() => void updateLayoutSetting("pageFillStrategy", "safe")}>Safe</Button>
+              <Button type="button" variant={templateDraft.pageFillStrategy === "balanced" ? "default" : "outline"} size="sm" onClick={() => void updateLayoutSetting("pageFillStrategy", "balanced")}>Balanced</Button>
+              <Button type="button" variant={templateDraft.pageFillStrategy === "aggressive" ? "default" : "outline"} size="sm" onClick={() => void updateLayoutSetting("pageFillStrategy", "aggressive")}>Aggressive</Button>
+            </div>
+          </div>
+          
+          <div className={showLivePreview ? "grid grid-cols-1 lg:grid-cols-2 gap-4" : "space-y-3"}>
+            <div className="space-y-3">
+              <div data-testid="editor-workspace" className="overflow-auto rounded-md border bg-slate-200 px-3 py-5 sm:px-4 lg:px-6">
+                <div data-testid="editor-document-canvas" className="mx-auto min-h-[920px] w-full max-w-[794px] rounded-sm border border-slate-300 bg-white shadow-lg relative">
+                  {templateDraft.layoutMode === "two-column" ? <div className="pointer-events-none absolute inset-y-0 left-1/2 w-px border-l border-dashed border-slate-200" /> : null}
+                  <EditorContent editor={editor} />
+                </div>
+              </div>
+            </div>
+
+            {showLivePreview ? (
+              <div className="flex flex-col rounded-md border bg-slate-100 p-2 min-h-[700px]">
+                <div className="flex items-center justify-between border-b pb-2 mb-2 px-1">
+                  <span className="text-xs font-semibold text-slate-700 flex items-center gap-1">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                    Live PDF Preview
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs py-0.5 px-1.5 h-6 text-slate-500 hover:text-slate-800"
+                    onClick={() => setPreviewVersion((v) => v + 1)}
+                  >
+                    <RefreshCcw size={12} className="mr-1" /> Refresh
+                  </Button>
+                </div>
+                <div className="flex-1 w-full bg-white rounded border overflow-hidden">
+                  <iframe
+                    src={previewSrc}
+                    className="w-full h-full min-h-[850px] border-0"
+                    title="Live Export Preview"
+                  />
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <style>{`.datasheet-editor-surface .page-break::before,.datasheet-editor-surface .page-break::after{content:"";height:1px;flex:1;background:#cbd5e1}.datasheet-editor-surface .page-break-label{border:1px solid #cbd5e1;border-radius:999px;background:#f8fafc;padding:2px 10px}.datasheet-editor-surface [data-keep-with-next='true']{position:relative}.datasheet-editor-surface [data-keep-with-next='true']::before{content:"Keep with next";display:inline-block;margin-right:8px;border-radius:999px;background:#fef3c7;color:#92400e;padding:1px 7px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.02em}.datasheet-editor-surface [data-hidden-from-export='true']::after{content:"Hidden from export";display:inline-block;margin-left:8px;border-radius:999px;background:#e2e8f0;color:#334155;padding:1px 7px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.02em}`}</style>
         </CardContent>
       </Card>
       <div className="space-y-4">
+        <Card className="border-amber-200 bg-amber-50/10">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-bold flex items-center gap-1.5 text-amber-900">
+              <Sparkles size={16} className="text-amber-600" />
+              Rebranding & Cleanup
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 pt-0 text-xs">
+            <div className="space-y-1.5">
+              <label className="font-semibold text-slate-700">Find & Purge Competitor Brand Text</label>
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  placeholder="e.g. Acme Corp"
+                  value={brandText}
+                  onChange={(e) => setBrandText(e.target.value)}
+                  className="flex-1 rounded border border-slate-300 px-2 py-1 bg-white"
+                  disabled={purging}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="bg-white border-amber-300 text-amber-700 hover:bg-amber-100/50"
+                  onClick={handlePurgeBrandText}
+                  disabled={purging || !brandText.trim()}
+                >
+                  Purge
+                </Button>
+              </div>
+              <p className="text-[10px] text-muted-foreground">Finds and deletes all occurrences of this text from the editor.</p>
+            </div>
+
+            <div className="border-t border-slate-100 pt-3 flex flex-col gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-full justify-start text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
+                onClick={handlePurgeAllImages}
+              >
+                <Trash size={14} className="mr-2" />
+                Purge All Competitor Images
+              </Button>
+              
+              {bundle.document.sourceCleanupReport?.uncertainItems && bundle.document.sourceCleanupReport.uncertainItems.length > 0 ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="w-full justify-start text-amber-700 hover:text-amber-800 hover:bg-amber-100/50 border-amber-300"
+                  onClick={handleBulkCleanUncertain}
+                >
+                  <Sparkles size={14} className="mr-2" />
+                  Clean All Uncertain Items ({bundle.document.sourceCleanupReport.uncertainItems.length})
+                </Button>
+              ) : null}
+            </div>
+          </CardContent>
+        </Card>
         <Card>
           <CardHeader><CardTitle>Document Metadata</CardTitle></CardHeader>
           <CardContent className="space-y-3">
@@ -866,13 +1159,260 @@ function ExportHistoryRow({ item }: { item: DatasheetExport }) {
   );
 }
 
-function EditorToolbar({ editor, selectedBlock, onMutate, onOpenPagedLayout }: { editor: Editor | null; selectedBlock: SelectedBlockState | null; onMutate: () => void; onOpenPagedLayout: () => void }) {
+type CodeMatchMode = "starts-with" | "ends-with" | "exact" | "contains";
+
+function replaceInJsonContent(node: JSONContent, matcher: (text: string) => boolean, replacer: (text: string) => string): { node: JSONContent; count: number } {
+  let count = 0;
+  if (node.type === "text" && typeof node.text === "string") {
+    const original = node.text;
+    const replaced = original.replace(/\S+/g, (word) => {
+      // Strip trailing punctuation for matching, keep punctuation in output
+      const trailingPunct = word.match(/([.,;:!?)]+)$/);
+      const core = trailingPunct ? word.slice(0, word.length - trailingPunct[0].length) : word;
+      if (matcher(core)) {
+        count++;
+        return replacer(core) + (trailingPunct ? trailingPunct[0] : "");
+      }
+      return word;
+    });
+    return { node: replaced !== original ? { ...node, text: replaced } : node, count };
+  }
+  if (Array.isArray(node.content)) {
+    let totalCount = 0;
+    const newContent = node.content.map((child) => {
+      const result = replaceInJsonContent(child, matcher, replacer);
+      totalCount += result.count;
+      return result.node;
+    });
+    return { node: totalCount > 0 ? { ...node, content: newContent } : node, count: totalCount };
+  }
+  return { node, count };
+}
+
+function CodeReplacePanel({ editor, onMutate }: { editor: Editor | null; onMutate: () => void }) {
+  const [find, setFind] = useState("");
+  const [replaceTo, setReplaceTo] = useState("");
+  const [mode, setMode] = useState<CodeMatchMode>("starts-with");
+  const [lastResult, setLastResult] = useState<{ count: number; find: string } | null>(null);
+  const [open, setOpen] = useState(false);
+
+  function buildMatcher(pattern: string, m: CodeMatchMode): (text: string) => boolean {
+    if (!pattern) return () => false;
+    switch (m) {
+      case "starts-with": return (t) => t.startsWith(pattern);
+      case "ends-with":   return (t) => t.endsWith(pattern);
+      case "exact":       return (t) => t === pattern;
+      case "contains":    return (t) => t.includes(pattern);
+    }
+  }
+
+  function buildReplacer(pattern: string, replacement: string, m: CodeMatchMode): (text: string) => string {
+    switch (m) {
+      case "starts-with": return (t) => replacement + t.slice(pattern.length);
+      case "ends-with":   return (t) => t.slice(0, t.length - pattern.length) + replacement;
+      case "exact":       return () => replacement;
+      case "contains":    return (t) => t.split(pattern).join(replacement);
+    }
+  }
+
+  function handleReplace() {
+    if (!editor || !find.trim()) return;
+    const pattern = find.trim();
+    const matcher = buildMatcher(pattern, mode);
+    const replacer = buildReplacer(pattern, replaceTo.trim(), mode);
+    const currentJson = editor.getJSON() as JSONContent;
+    const { node: newJson, count } = replaceInJsonContent(currentJson, matcher, replacer);
+    if (count > 0) {
+      editor.commands.setContent(newJson, { emitUpdate: false });
+      onMutate();
+    }
+    setLastResult({ count, find: pattern });
+  }
+
+  const modeLabels: Record<CodeMatchMode, string> = {
+    "starts-with": "Starts with",
+    "ends-with":   "Ends with",
+    "exact":       "Exact match",
+    "contains":    "Contains",
+  };
+
+  return (
+    <details className="rounded-md border bg-amber-50/60 text-xs" open={open} onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
+      <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-2 font-semibold text-amber-800 hover:bg-amber-100/60 transition rounded-md">
+        <span className="text-base">🔤</span> Code Find &amp; Replace
+        <span className="ml-auto text-[10px] font-normal text-amber-600">{open ? "▲ collapse" : "▼ expand"}</span>
+      </summary>
+      <div className="px-4 pb-4 pt-2 space-y-3">
+        <p className="text-[11px] text-amber-700 leading-snug">Replace product codes in the document body. Words are matched individually so codes embedded in paragraphs are found correctly.</p>
+        <div className="flex flex-wrap gap-2">
+          <div className="flex flex-col gap-1 flex-1 min-w-[160px]">
+            <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Match mode</label>
+            <div className="flex flex-wrap gap-1">
+              {(["starts-with", "ends-with", "exact", "contains"] as CodeMatchMode[]).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className={`rounded px-2 py-1 text-[11px] font-medium border transition ${
+                    mode === m
+                      ? "bg-amber-600 text-white border-amber-600"
+                      : "bg-white text-slate-600 border-slate-200 hover:border-amber-400 hover:text-amber-700"
+                  }`}
+                >
+                  {modeLabels[m]}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2 items-end">
+          <div className="flex flex-col gap-1 flex-1 min-w-[160px]">
+            <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+              {mode === "starts-with" ? "Starts with" : mode === "ends-with" ? "Ends with" : mode === "exact" ? "Exact code" : "Contains"}
+            </label>
+            <Input
+              value={find}
+              onChange={(e) => { setFind(e.target.value); setLastResult(null); }}
+              placeholder={mode === "starts-with" ? "e.g. CW29150R" : mode === "ends-with" ? "e.g. -XX" : "e.g. CW29150R-XX"}
+              className="h-8 text-xs font-mono"
+            />
+          </div>
+          <div className="flex flex-col gap-1 flex-1 min-w-[160px]">
+            <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+              {mode === "starts-with" ? "Replace prefix with" : mode === "ends-with" ? "Replace suffix with" : "Replace with"}
+            </label>
+            <Input
+              value={replaceTo}
+              onChange={(e) => { setReplaceTo(e.target.value); setLastResult(null); }}
+              placeholder={mode === "starts-with" ? "e.g. V-CW29150R" : mode === "ends-with" ? "e.g. -ADJ" : "e.g. V-CW29150R-XX"}
+              className="h-8 text-xs font-mono"
+            />
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            disabled={!editor || !find.trim()}
+            onClick={handleReplace}
+            className="h-8 shrink-0 bg-amber-600 hover:bg-amber-700 text-white"
+          >
+            Replace All
+          </Button>
+        </div>
+        {lastResult !== null ? (
+          <p className={`text-[11px] font-medium ${ lastResult.count > 0 ? "text-emerald-700" : "text-slate-500" }`}>
+            {lastResult.count > 0
+              ? `✓ Replaced ${lastResult.count} occurrence${lastResult.count !== 1 ? "s" : ""} of "${lastResult.find}"`
+              : `No occurrences of "${lastResult.find}" found.`}
+          </p>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+type ExtractedImageItem = { id: string; pageNumber: number; width: number; height: number; url: string; mimeType: string };
+
+
+function InsertImagePicker({ projectId, editor, onMutate, onClose }: { projectId: string; editor: Editor; onMutate: () => void; onClose: () => void }) {
+  const [images, setImages] = useState<ExtractedImageItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetch(`/api/projects/${projectId}/extraction/images`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        if (data?.images) setImages(data.images as ExtractedImageItem[]);
+        else setError("Failed to load images.");
+      })
+      .catch(() => { if (!cancelled) setError("Network error."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [projectId]);
+
+  function insertImage(img: ExtractedImageItem) {
+    const fullUrl = window.location.origin + img.url;
+    editor.chain().focus().setImage({ src: fullUrl, alt: `Extracted image p${img.pageNumber}`, title: img.id }).run();
+    onMutate();
+    onClose();
+  }
+
+  // Group by page
+  const byPage = images.reduce<Record<number, ExtractedImageItem[]>>((acc, img) => {
+    (acc[img.pageNumber] ??= []).push(img);
+    return acc;
+  }, {});
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="relative flex max-h-[85vh] w-full max-w-3xl flex-col rounded-xl border bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b px-5 py-4">
+          <div>
+            <h2 className="text-base font-semibold text-slate-800">Insert Extracted Image</h2>
+            <p className="mt-0.5 text-xs text-slate-500">Select an image from the extraction to insert at the cursor position</p>
+          </div>
+          <button onClick={onClose} className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          {loading ? (
+            <div className="flex items-center justify-center py-16 text-sm text-slate-400">Loading images…</div>
+          ) : error ? (
+            <div className="flex items-center justify-center py-16 text-sm text-red-500">{error}</div>
+          ) : images.length === 0 ? (
+            <div className="flex items-center justify-center py-16 text-sm text-slate-400">No images found in extraction.</div>
+          ) : (
+            <div className="space-y-6">
+              {Object.entries(byPage).sort(([a], [b]) => Number(a) - Number(b)).map(([pageNum, imgs]) => (
+                <div key={pageNum}>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Page {pageNum}</p>
+                  <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
+                    {imgs.map((img) => (
+                      <button
+                        key={img.id}
+                        onClick={() => insertImage(img)}
+                        className="group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50 transition hover:border-blue-400 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-400"
+                        title={`Page ${img.pageNumber} · ${img.width}×${img.height}`}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={img.url}
+                          alt={`Page ${img.pageNumber}`}
+                          className="h-full w-full object-contain p-1"
+                          loading="lazy"
+                        />
+                        <span className="absolute inset-x-0 bottom-0 bg-black/60 px-1.5 py-1 text-[10px] text-white opacity-0 transition group-hover:opacity-100">
+                          {img.width}×{img.height}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditorToolbar({ projectId, editor, selectedBlock, onMutate, onOpenPagedLayout }: { projectId: string; editor: Editor | null; selectedBlock: SelectedBlockState | null; onMutate: () => void; onOpenPagedLayout: () => void }) {
+  const [showImagePicker, setShowImagePicker] = useState(false);
   if (!editor) return <div className="h-10 rounded-md border bg-secondary/40" />;
   const selectedType = selectedBlock?.type ?? null;
   const selectedAttrs = selectedBlock?.attrs ?? {};
   const canApplyLayout = Boolean(selectedType);
   const isImageSelected = selectedType === "image";
   return (
+    <>
     <div className="flex flex-wrap items-stretch gap-2 rounded-md border bg-secondary/40 p-2">
       <ToolbarGroup label="Format">
         <ToolButton label="H1" active={editor.isActive("heading", { level: 1 })} onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}><Heading1 size={15} /></ToolButton>
@@ -886,18 +1426,59 @@ function EditorToolbar({ editor, selectedBlock, onMutate, onOpenPagedLayout }: {
       <ToolbarGroup label="Lists">
         <ToolButton label="Bullet list" active={editor.isActive("bulletList")} onClick={() => editor.chain().focus().toggleBulletList().run()}><List size={15} /></ToolButton>
         <ToolButton label="Numbered list" active={editor.isActive("orderedList")} onClick={() => editor.chain().focus().toggleOrderedList().run()}><ListOrdered size={15} /></ToolButton>
+        <ToolButton
+          label="Split to Bullets"
+          showLabel={true}
+          onClick={() => {
+            const { state } = editor;
+            const { from, to } = state.selection;
+            let textContent = "";
+            state.doc.nodesBetween(from, to, (node) => {
+              if (node.isText && typeof node.text === "string") {
+                textContent += node.text;
+              }
+            });
+            if (!textContent.trim()) return;
+
+            // Split by bullet character, double spaces, or newlines
+            let items = textContent
+              .split(/(?:\s*\u2022\s*|\s{2,}|\n)/)
+              .map(item => item.trim())
+              .filter(Boolean);
+
+            if (items.length <= 1) {
+              // Try comma/semicolon split if no double spaces
+              items = textContent.split(/[,;\n]/).map(item => item.trim()).filter(Boolean);
+            }
+
+            if (items.length > 0) {
+              editor.chain().focus().deleteSelection().run();
+              editor.chain().focus().insertContent({
+                type: "bulletList",
+                content: items.map(item => ({
+                  type: "listItem",
+                  content: [{ type: "paragraph", content: [{ type: "text", text: item }] }]
+                }))
+              }).run();
+              onMutate();
+            }
+          }}
+        >
+          <Sparkles size={14} className="text-amber-500" />
+        </ToolButton>
       </ToolbarGroup>
       <ToolbarGroup label="Table">
         <ToolButton label="Insert table" onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}><Table2 size={15} /></ToolButton>
-        <ToolButton label="Add table row" onClick={() => editor.chain().focus().addRowAfter().run()}>+ row</ToolButton>
-        <ToolButton label="Add table column" onClick={() => editor.chain().focus().addColumnAfter().run()}>+ col</ToolButton>
+        <ToolButton label="Add row" onClick={() => editor.chain().focus().addRowAfter().run()}>+ row</ToolButton>
+        <ToolButton label="Add col" onClick={() => editor.chain().focus().addColumnAfter().run()}>+ col</ToolButton>
         <ToolButton label="Table keep together" active={selectedAttrs.allowSplit === false} onClick={() => { if (setSelectedBlockAttrs(editor, { allowSplit: selectedAttrs.allowSplit === false ? true : false, avoidOrphan: true })) onMutate(); }}><SplitSquareVertical size={15} /></ToolButton>
       </ToolbarGroup>
       <ToolbarGroup label="Layout">
         <ToolButton label="Insert page break" onClick={() => { editor.chain().focus().insertContent({ type: "pageBreak" }).run(); onMutate(); }}><FilePlus2 size={15} /></ToolButton>
-        <ToolButton label="Open paged layout editor" onClick={onOpenPagedLayout}><ExternalLink size={15} /></ToolButton>
+        <ToolButton label="Open paged layout editor" showLabel={true} onClick={onOpenPagedLayout}><ExternalLink size={15} /></ToolButton>
       </ToolbarGroup>
       <ToolbarGroup label="Image">
+        <ToolButton label="Insert extracted image" showLabel={true} onClick={() => setShowImagePicker(true)}><Plus size={15} /></ToolButton>
         <ToolButton label="Image small" onClick={() => { if (applyWidthPreference(editor, "half")) onMutate(); }} disabled={!isImageSelected}><ImageIcon size={15} /></ToolButton>
         <ToolButton label="Image medium" onClick={() => { if (applyWidthPreference(editor, "column")) onMutate(); }} disabled={!isImageSelected}><ImageIcon size={15} /></ToolButton>
         <ToolButton label="Image full width" onClick={() => { if (applyWidthPreference(editor, "full")) onMutate(); }} disabled={!isImageSelected}><Maximize2 size={15} /></ToolButton>
@@ -922,6 +1503,8 @@ function EditorToolbar({ editor, selectedBlock, onMutate, onOpenPagedLayout }: {
         {selectedBlock ? <div className="mt-3 flex min-w-[220px] flex-col justify-center rounded border bg-white/80 px-3 py-2 text-xs text-muted-foreground"><span className="font-semibold text-slate-700">Selected block</span><span>{selectedBlock.label}</span><span>ID: {selectedBlock.attrs.blockId ?? "pending"}</span></div> : null}
       </details>
     </div>
+      {showImagePicker ? <InsertImagePicker projectId={projectId} editor={editor} onMutate={onMutate} onClose={() => setShowImagePicker(false)} /> : null}
+    </>
   );
 }
 
@@ -943,7 +1526,7 @@ function SectionNavigatorPanel({ editor, sections, onMutate }: { editor: Editor 
         <p className="text-sm text-muted-foreground">Jump between sections and keep major technical sections together when needed.</p>
       </CardHeader>
       <CardContent className="space-y-2">
-        {sections.length === 0 ? <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">No sections detected yet.</p> : sections.map((section) => <div key={section.blockId} className="flex flex-wrap items-center gap-2 rounded-md border bg-white p-2"><button type="button" className="text-left text-sm font-medium text-slate-800 hover:text-slate-950" onClick={() => { if (editor) jumpToBlock(editor, section.blockId); }}>{section.title}</button><div className="ml-auto flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" onClick={() => { if (editor && toggleHeadingSectionFlag(editor, section.blockId, "keepSectionTogether")) onMutate(); }}>Keep together</Button><Button type="button" variant="outline" size="sm" onClick={() => { if (editor && toggleHeadingSectionFlag(editor, section.blockId, "forcePageBreakBefore")) onMutate(); }}>Break before</Button><Button type="button" variant="outline" size="sm" onClick={() => { if (editor && moveBlockById(editor, section.blockId, -1)) onMutate(); }}><ArrowUp size={14} /></Button><Button type="button" variant="outline" size="sm" onClick={() => { if (editor && moveBlockById(editor, section.blockId, 1)) onMutate(); }}><ArrowDown size={14} /></Button></div></div>)}
+        {sections.length === 0 ? <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">No sections detected yet.</p> : sections.map((section) => <div key={section.blockId} className="flex flex-wrap items-center gap-2 rounded-md border bg-white p-2"><button type="button" className="text-left text-sm font-medium text-slate-800 hover:text-slate-950" onClick={() => { if (editor) jumpToBlock(editor, section.blockId); }}>{section.title}</button><div className="ml-auto flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" onClick={() => { if (editor && toggleHeadingSectionFlag(editor, section.blockId, "keepSectionTogether")) onMutate(); }}>Keep together</Button><Button type="button" variant="outline" size="sm" onClick={() => { if (editor && toggleHeadingSectionFlag(editor, section.blockId, "forcePageBreakBefore")) onMutate(); }}>Break before</Button><Button type="button" variant="outline" size="sm" onClick={() => { if (editor && moveSectionById(editor, section.blockId, -1)) onMutate(); }}><ArrowUp size={14} /></Button><Button type="button" variant="outline" size="sm" onClick={() => { if (editor && moveSectionById(editor, section.blockId, 1)) onMutate(); }}><ArrowDown size={14} /></Button></div></div>)}
       </CardContent>
     </Card>
   );
@@ -1055,6 +1638,52 @@ function moveBlockById(editor: Editor, blockId: string, direction: -1 | 1) {
   const index = nodes.findIndex((node) => isObjectRecord(node?.attrs) && node.attrs.blockId === blockId);
   if (index < 0) return false;
   return moveTopLevelBlockAt(editor, index, direction);
+}
+
+function moveSectionById(editor: Editor, blockId: string, direction: -1 | 1) {
+  const doc = ensureEditorJsonHasBlockIds(editor.getJSON());
+  const nodes = Array.isArray(doc.content) ? [...doc.content] : [];
+  const startIndex = nodes.findIndex((node) => node?.type === "heading" && isObjectRecord(node.attrs) && node.attrs.blockId === blockId);
+  if (startIndex < 0) return false;
+  
+  let endIndex = startIndex;
+  while (endIndex + 1 < nodes.length && nodes[endIndex + 1]?.type !== "heading") {
+    endIndex++;
+  }
+  
+  const currentSectionNodes = nodes.slice(startIndex, endIndex + 1);
+  
+  if (direction === -1) {
+    let prevHeadingIndex = -1;
+    for (let i = startIndex - 1; i >= 0; i--) {
+      if (nodes[i]?.type === "heading") {
+        prevHeadingIndex = i;
+        break;
+      }
+    }
+    if (prevHeadingIndex < 0) return false;
+    
+    nodes.splice(startIndex, currentSectionNodes.length);
+    nodes.splice(prevHeadingIndex, 0, ...currentSectionNodes);
+  } else {
+    const nextHeadingIndex = endIndex + 1;
+    if (nextHeadingIndex >= nodes.length || nodes[nextHeadingIndex]?.type !== "heading") {
+      return false;
+    }
+    
+    let nextSectionEndIndex = nextHeadingIndex;
+    while (nextSectionEndIndex + 1 < nodes.length && nodes[nextSectionEndIndex + 1]?.type !== "heading") {
+      nextSectionEndIndex++;
+    }
+    
+    nodes.splice(startIndex, currentSectionNodes.length);
+    const insertIndex = nextSectionEndIndex - currentSectionNodes.length + 1;
+    nodes.splice(insertIndex, 0, ...currentSectionNodes);
+  }
+  
+  editor.commands.setContent({ ...doc, content: nodes });
+  jumpToBlock(editor, blockId);
+  return true;
 }
 
 function moveTopLevelBlockAt(editor: Editor, index: number, direction: -1 | 1) {
@@ -1217,8 +1846,8 @@ function TabButton({ active, disabled, onClick, children }: { active: boolean; d
   return <Button type="button" variant={active ? "default" : "outline"} size="sm" disabled={disabled} onClick={onClick}>{children}</Button>;
 }
 
-function ToolButton({ label, active = false, disabled = false, onClick, children }: { label: string; active?: boolean; disabled?: boolean; onClick: () => void; children: React.ReactNode }) {
-  return <Button type="button" variant={active ? "default" : "outline"} size="sm" title={label} aria-label={label} disabled={disabled} onClick={onClick} className="gap-1.5">{children}<span className="sr-only sm:not-sr-only">{label}</span></Button>;
+function ToolButton({ label, active = false, disabled = false, onClick, showLabel = false, children }: { label: string; active?: boolean; disabled?: boolean; onClick: () => void; showLabel?: boolean; children: React.ReactNode }) {
+  return <Button type="button" variant={active ? "default" : "outline"} size="sm" title={label} aria-label={label} disabled={disabled} onClick={onClick} className={showLabel ? "gap-1.5" : "gap-1.5 px-2"}>{children}{showLabel ? <span className="sr-only sm:not-sr-only">{label}</span> : null}</Button>;
 }
 
 function formatBytes(value: number) {

@@ -21,6 +21,7 @@ export type PythonExtractionRequest = {
   projectId: string;
   ownerId: string;
   source: ExtractionRequestSource;
+  extractionEngine?: "native" | "google_doc_ai" | "gemini_vision";
 };
 
 export type ProjectArtifact = {
@@ -107,6 +108,143 @@ export async function callPythonExtractionService(request: PythonExtractionReque
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new AppError("Extraction timed out", 504, { code: "EXTRACTION_TIMEOUT" });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export type PythonExportRequest = {
+  projectId: string;
+  ownerId: string;
+  docxStorageKey: string;
+};
+
+export async function callPythonDocxConversionService(request: PythonExtractionRequest) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), env.EXTRACTION_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(new URL("/convert-pdf-to-docx", env.PYTHON_WORKER_URL), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new AppError(`Python DOCX conversion failed with ${response.status}: ${body.slice(0, 300)}`, response.status >= 500 ? 502 : 422, {
+        code: response.status >= 500 ? "PYTHON_WORKER_ERROR" : "CONVERSION_REJECTED"
+      });
+    }
+
+    const json = await response.json();
+    if (!json.success) {
+      throw new AppError(json.error || "DOCX conversion returned success: false", 422, { code: "CONVERSION_FAILED" });
+    }
+
+    return {
+      storageKey: json.storageKey as string,
+      fileSize: json.fileSize as number
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new AppError("DOCX conversion timed out", 504, { code: "CONVERSION_TIMEOUT" });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export type PythonRebrandRequest = {
+  projectId: string;
+  ownerId: string;
+  docxStorageKey: string;
+  branding: {
+    companyName: string;
+    logoStorageKey?: string | null;
+    productCode?: string;
+    productTitle?: string;
+    documentStatus?: string;
+    revision?: string;
+    primaryColor?: string;
+    accentColor?: string;
+  };
+};
+
+export async function callPythonDocxRebrandService(request: PythonRebrandRequest) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), env.EXTRACTION_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(new URL("/rebrand-docx", env.PYTHON_WORKER_URL), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new AppError(`Python rebranding failed with ${response.status}: ${body.slice(0, 300)}`, response.status >= 500 ? 502 : 422, {
+        code: response.status >= 500 ? "PYTHON_WORKER_ERROR" : "REBRAND_REJECTED"
+      });
+    }
+
+    const json = await response.json();
+    if (!json.success) {
+      throw new AppError(json.error || "Rebranding returned success: false", 422, { code: "REBRAND_FAILED" });
+    }
+
+    return {
+      storageKey: json.storageKey as string,
+      fileSize: json.fileSize as number
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new AppError("Rebranding timed out", 504, { code: "REBRAND_TIMEOUT" });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+
+export async function callPythonDocxToPdfService(request: PythonExportRequest) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), env.EXTRACTION_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(new URL("/convert-docx-to-pdf", env.PYTHON_WORKER_URL), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new AppError(`Python PDF export failed with ${response.status}: ${body.slice(0, 300)}`, response.status >= 500 ? 502 : 422, {
+        code: response.status >= 500 ? "PYTHON_WORKER_ERROR" : "EXPORT_REJECTED"
+      });
+    }
+
+    const json = await response.json();
+    if (!json.success) {
+      throw new AppError(json.error || "PDF export returned success: false", 422, { code: "EXPORT_FAILED" });
+    }
+
+    return {
+      pdfStorageKey: json.pdfStorageKey as string,
+      fileSize: json.fileSize as number
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new AppError("PDF export timed out", 504, { code: "EXPORT_TIMEOUT" });
     }
     throw error;
   } finally {
@@ -275,7 +413,41 @@ export async function getExtractedImageArtifactForProject(params: { projectId: s
   return toProjectArtifact(object, mimeType);
 }
 
-export async function retryExtractionForProject(projectId: string, ownerId: string) {
+export async function getAllExtractedImagesForProject(params: { projectId: string; ownerId: string }) {
+  if (!Types.ObjectId.isValid(params.projectId)) return null;
+  const projectObjectId = new Types.ObjectId(params.projectId);
+  const ownerObjectId = new Types.ObjectId(params.ownerId);
+  const project = await ProjectModel.exists({ _id: projectObjectId, ownerId: ownerObjectId });
+  if (!project) return null;
+
+  const run = await findLatestExtractionRun(projectObjectId, ownerObjectId);
+  if (!run) return { images: [] };
+
+  const filter = { extractionRunId: run._id, projectId: projectObjectId, ownerId: ownerObjectId };
+  const pages = await ExtractedPageModel.find(filter).sort({ pageNumber: 1 }).lean<Array<Record<string, unknown>>>();
+
+  const images: Array<{ id: string; pageNumber: number; width: number; height: number; url: string; mimeType: string }> = [];
+  for (const page of pages) {
+    const pageNumber = Number(page.pageNumber);
+    const rawImages = Array.isArray(page.images) ? (page.images as Array<Record<string, unknown>>) : [];
+    for (const img of rawImages) {
+      const id = String(img.id ?? "");
+      if (!id) continue;
+      images.push({
+        id,
+        pageNumber,
+        width: Number(img.width ?? 0),
+        height: Number(img.height ?? 0),
+        mimeType: typeof img.mimeType === "string" && img.mimeType ? img.mimeType : "image/png",
+        url: buildExtractedImageArtifactUrl(params.projectId, pageNumber, id)
+      });
+    }
+  }
+
+  return { images };
+}
+
+export async function retryExtractionForProject(projectId: string, ownerId: string, engine: "native" | "google_doc_ai" | "gemini_vision" = "gemini_vision") {
   if (!Types.ObjectId.isValid(projectId)) throw new AppError("Project not found", 404, { code: "PROJECT_NOT_FOUND" });
   const project = await ProjectModel.findOne({ _id: projectId, ownerId: new Types.ObjectId(ownerId) });
   if (!project) throw new AppError("Project not found", 404, { code: "PROJECT_NOT_FOUND" });
@@ -292,7 +464,7 @@ export async function retryExtractionForProject(projectId: string, ownerId: stri
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
   await ProjectModel.updateOne({ _id: project._id }, { $set: { status: "QUEUED", extractionProgress: 0, lastError: null } });
-  const bullJob = await getExtractPdfQueue().add("extract", { projectId, ownerId, storageKey: project.originalPdf.storageKey }, { jobId: `${projectId}-${Date.now()}` });
+  const bullJob = await getExtractPdfQueue().add("extract", { projectId, ownerId, storageKey: project.originalPdf.storageKey, extractionEngine: engine }, { jobId: `${projectId}-${Date.now()}` });
   await ProcessingJobModel.updateOne({ projectId: project._id }, { $set: { bullJobId: bullJob.id ?? null } });
 }
 

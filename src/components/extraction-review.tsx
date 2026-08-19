@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useTransition } from "react";
-import { AlertTriangle, FileText, ImageIcon, RefreshCcw, Table2 } from "lucide-react";
+import { AlertTriangle, Bot, FileText, ImageIcon, RefreshCcw, Sparkles, Table2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -84,11 +84,15 @@ export function ExtractionReview({ projectId, status, originalPdfUrl }: { projec
     void loadPage(selectedPage);
   }, [projectId, selectedPage]);
 
-  async function retryExtraction() {
+  async function retryExtraction(engine: "native" | "google_doc_ai" | "gemini_vision" = "gemini_vision") {
     startTransition(async () => {
-      const response = await fetch(`/api/projects/${projectId}/retry-extraction`, { method: "POST" });
+      const response = await fetch(`/api/projects/${projectId}/retry-extraction`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ engine })
+      });
       if (!response.ok) {
-        setError("Retry could not be started");
+        setError("Extraction could not be started");
         return;
       }
       await loadSummary();
@@ -98,6 +102,8 @@ export function ExtractionReview({ projectId, status, originalPdfUrl }: { projec
   const run = summary?.run ?? null;
   const runSummary = run?.summary;
   const isProcessing = ["QUEUED", "PROCESSING"].includes(status);
+  const isGeminiVisionUsed = run?.warnings?.some((w) => w.includes("GEMINI_VISION")) || false;
+  const isGoogleDocAiUsed = run?.warnings?.some((w) => w.includes("GOOGLE_DOC_AI")) || false;
 
   return (
     <div className="space-y-6">
@@ -111,12 +117,57 @@ export function ExtractionReview({ projectId, status, originalPdfUrl }: { projec
       <Card>
         <CardHeader>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <CardTitle>Extraction review</CardTitle>
-            <div className="flex flex-wrap gap-2 text-sm text-muted-foreground">
+            <div className="flex items-center gap-3">
+              <CardTitle>Extraction review</CardTitle>
+              <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                isGeminiVisionUsed
+                  ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                  : isGoogleDocAiUsed
+                  ? "bg-purple-100 text-purple-800 border border-purple-200"
+                  : "bg-blue-100 text-blue-800 border border-blue-200"
+              }`}>
+                {isGeminiVisionUsed ? <Sparkles size={12} className="text-emerald-600" /> : isGoogleDocAiUsed ? <Bot size={12} /> : <Zap size={12} />}
+                {isGeminiVisionUsed ? "Gemini Multimodal Vision AI Engine" : isGoogleDocAiUsed ? "Google Document AI Engine" : "Standard (PyMuPDF) Engine"}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
               <span>OCR {runSummary?.ocrUsed ? "used" : "not used"}</span>
               <span>{runSummary?.warningCount ?? 0} warnings</span>
               <Button variant="outline" size="sm" asChild><a href={originalPdfUrl} target="_blank" rel="noreferrer">Original PDF</a></Button>
-              {status === "FAILED" ? <Button size="sm" onClick={retryExtraction} disabled={isPending}><RefreshCcw size={15} />Retry</Button> : null}
+              
+              <div className="flex items-center gap-1.5 border-l pl-2">
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium shadow-sm"
+                  onClick={() => retryExtraction("gemini_vision")}
+                  disabled={isPending || isProcessing}
+                  title="Extract with Google Gemini Multimodal Vision AI for 100% accurate layout, tables, and watermarks removal"
+                >
+                  <Sparkles size={14} />
+                  Gemini Vision AI
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => retryExtraction("google_doc_ai")}
+                  disabled={isPending || isProcessing}
+                  title="Extract using Google Cloud Document AI Parser"
+                >
+                  <Bot size={14} />
+                  Doc AI
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => retryExtraction("native")}
+                  disabled={isPending || isProcessing}
+                  title="Extract using fast local PyMuPDF parser"
+                >
+                  <Zap size={14} className="text-amber-500" />
+                  Standard
+                </Button>
+              </div>
             </div>
           </div>
         </CardHeader>

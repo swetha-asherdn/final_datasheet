@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
+import path from "path";
 
 const nextConfig: NextConfig = {
+  outputFileTracingRoot: path.join(__dirname),
   eslint: {
     ignoreDuringBuilds: true
   },
@@ -8,6 +10,10 @@ const nextConfig: NextConfig = {
     serverActions: {
       bodySizeLimit: "26mb"
     }
+  },
+  webpack: (config) => {
+    config.resolve.modules.push(path.resolve(__dirname, 'node_modules'));
+    return config;
   }
 };
 

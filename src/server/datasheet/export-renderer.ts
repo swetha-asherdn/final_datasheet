@@ -147,7 +147,16 @@ export function renderExportDocumentHtml(pageModel: ExportPageModel, template: E
   h1, h2, h3 { display: block; clear: both; color: ${escapeCssColor(template.primaryColor)}; line-height: 1.18; break-after: avoid; page-break-after: avoid; } h1 { margin: 0 0 4.2mm; font-size: 15.2pt; } h2 { margin: 0 0 3.2mm; font-size: 11.2pt; } h3 { margin: 0 0 2.4mm; font-size: 10pt; }
   p { margin: 0 0 2.8mm; } hr { border: 0; border-top: 1px solid #c8d0d8; margin: 1.1mm 0 1.8mm; } ul, ol { margin: 0 0 3mm 5mm; padding-left: 4.2mm; } li { margin: 0 0 1.1mm; } a { color: ${escapeCssColor(template.primaryColor)}; text-decoration: underline; } .technical-var { font-weight: 600; white-space: nowrap; }
   table { width: 100%; max-width: 100%; margin: 0 0 1.95mm; border-collapse: collapse; table-layout: fixed; font-size: 7.6pt; line-height: 1.25; } thead { display: table-header-group; } th, td { border: 1px solid #c8d0d8; padding: 2.2px 4.5px; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; hyphens: auto; } th { padding: 2.6px 5px; background: #edf3f7; color: ${escapeCssColor(template.primaryColor)}; font-weight: 700; letter-spacing: 0.008em; } .technical-table td:first-child, .technical-table th:first-child { width: 36%; } .technical-table-dense { font-size: 6.25pt; line-height: 1.06; } .technical-table-dense td, .technical-table-dense th { padding: 0.95px 2px; }
-  .table-block + .table-block { margin-top: 0.75mm; } .table-review, .table-review-text { border-left: 1mm solid ${escapeCssColor(template.accentColor)}; background: #f7f9fb; padding: 1.8mm 2.6mm; color: #56616b; } .page-break { margin: 0; } strong { font-weight: 700; } em { font-style: italic; } u { text-decoration: underline; } sub, sup { font-size: 70%; line-height: 0; } .pdf-body.layout-two-column.layout-density-technical-dense { padding: 1.3mm 0 0.9mm; gap: 0.5mm; font-size: 8.2pt; line-height: 1.28; } .pdf-body.layout-two-column.layout-density-technical-dense .technical-columns-flow { gap: 4.2mm; } .pdf-body.layout-two-column.layout-density-technical-dense .column-flow-group { gap: 0.28mm; } .pdf-body.layout-two-column.layout-density-technical-dense .column-flow-item { margin: 0 0 1.1mm; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block { gap: 0.35mm; margin: 0 0 0.55mm; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-caption { font-size: 5.85pt; line-height: 1.05; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-wrap { justify-content: center; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-size-small { max-width: 74%; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-size-medium { max-width: 88%; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .content-image { max-height: 33mm; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-size-small.content-image { max-height: 27mm; } .pdf-body.layout-two-column.layout-density-technical-dense h1 { margin: 0 0 3mm; font-size: 12.8pt; } .pdf-body.layout-two-column.layout-density-technical-dense h2 { margin: 0 0 1.8mm; font-size: 9.35pt; } .pdf-body.layout-two-column.layout-density-technical-dense h3 { margin: 0 0 1.3mm; font-size: 8.45pt; } .pdf-body.layout-two-column.layout-density-technical-dense p { margin: 0 0 1.6mm; } .pdf-body.layout-two-column.layout-density-technical-dense ul, .pdf-body.layout-two-column.layout-density-technical-dense ol { margin: 0 0 0.95mm 4.2mm; padding-left: 3.8mm; } .pdf-body.layout-two-column.layout-density-technical-dense li { margin: 0 0 0.55mm; } .pdf-body.layout-two-column.layout-density-technical-dense hr { margin: 0.6mm 0 0.95mm; } .pdf-body.layout-two-column.layout-density-technical-dense table { margin: 0 0 0.95mm; font-size: 6.15pt; line-height: 1.08; } .pdf-body.layout-two-column.layout-density-technical-dense th, .pdf-body.layout-two-column.layout-density-technical-dense td { padding: 1.4px 3.2px; } .pdf-body.layout-two-column.layout-density-technical-dense .technical-table-dense { font-size: 5.9pt; line-height: 1.04; } .pdf-body.layout-two-column.layout-density-technical-dense .technical-table-dense td, .pdf-body.layout-two-column.layout-density-technical-dense .technical-table-dense th { padding: 0.75px 1.8px; }
+   .table-block + .table-block { margin-top: 0.75mm; } .table-review, .table-review-text { border-left: 1mm solid ${escapeCssColor(template.accentColor)}; background: #f7f9fb; padding: 1.8mm 2.6mm; color: #56616b; } .page-break { margin: 0; } strong { font-weight: 700; } em { font-style: italic; } u { text-decoration: underline; } sub, sup { font-size: 70%; line-height: 0; } .pdf-body.layout-two-column.layout-density-technical-dense { padding: 1.3mm 0 0.9mm; gap: 0.5mm; font-size: 8.2pt; line-height: 1.28; } .pdf-body.layout-two-column.layout-density-technical-dense .technical-columns-flow { gap: 4.2mm; } .pdf-body.layout-two-column.layout-density-technical-dense .column-flow-group { gap: 0.28mm; } .pdf-body.layout-two-column.layout-density-technical-dense .column-flow-item { margin: 0 0 1.1mm; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block { gap: 0.35mm; margin: 0 0 0.55mm; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-caption { font-size: 5.85pt; line-height: 1.05; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-wrap { justify-content: center; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-size-small { max-width: 74%; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-size-medium { max-width: 88%; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .content-image { max-height: 33mm; } .pdf-body.layout-two-column.layout-density-technical-dense .figure-block-column .figure-image-size-small.content-image { max-height: 27mm; } .pdf-body.layout-two-column.layout-density-technical-dense h1 { margin: 0 0 3mm; font-size: 12.8pt; } .pdf-body.layout-two-column.layout-density-technical-dense h2 { margin: 0 0 1.8mm; font-size: 9.35pt; } .pdf-body.layout-two-column.layout-density-technical-dense h3 { margin: 0 0 1.3mm; font-size: 8.45pt; } .pdf-body.layout-two-column.layout-density-technical-dense p { margin: 0 0 1.6mm; } .pdf-body.layout-two-column.layout-density-technical-dense ul, .pdf-body.layout-two-column.layout-density-technical-dense ol { margin: 0 0 0.95mm 4.2mm; padding-left: 3.8mm; } .pdf-body.layout-two-column.layout-density-technical-dense li { margin: 0 0 0.55mm; } .pdf-body.layout-two-column.layout-density-technical-dense hr { margin: 0.6mm 0 0.95mm; } .pdf-body.layout-two-column.layout-density-technical-dense table { margin: 0 0 0.95mm; font-size: 6.15pt; line-height: 1.08; } .pdf-body.layout-two-column.layout-density-technical-dense th, .pdf-body.layout-two-column.layout-density-technical-dense td { padding: 1.4px 3.2px; } .pdf-body.layout-two-column.layout-density-technical-dense .technical-table-dense { font-size: 5.9pt; line-height: 1.04; } .pdf-body.layout-two-column.layout-density-technical-dense .technical-table-dense td, .pdf-body.layout-two-column.layout-density-technical-dense .technical-table-dense th { padding: 0.75px 1.8px; }
+  @media print {
+    html, body { background: #ffffff !important; width: 210mm !important; }
+    body { padding: 0 !important; margin: 0 !important; }
+    .pdf-page { box-shadow: none !important; margin: 0 !important; page-break-after: always !important; break-after: page !important; }
+    .pdf-page:last-child { page-break-after: auto !important; break-after: auto !important; }
+    .page-body-block, .figure-block, .column-flow-group, .column-flow-item { break-inside: avoid !important; page-break-inside: avoid !important; }
+    table { break-inside: avoid !important; page-break-inside: avoid !important; }
+    h1, h2, h3 { break-after: avoid !important; page-break-after: avoid !important; }
+  }
   </style></head><body class="export-mode-${mode}"><div class="pdf-document">${pageModel.pages.map((page, index) => renderExportPageHtml(page, index, totalPages, template, pageModel)).join("")}</div></body></html>`;
 }
 
@@ -738,9 +747,25 @@ function detectKnownSectionHeading(block: ExportBlock) {
 function inferTableSectionHeading(plainText: string, activeSection: string) {
   const normalized = normalizeTechnicalText(plainText).toUpperCase();
   if (!normalized) return "";
-  if (/\bRATINGS\b/.test(normalized) && !/\bCONDITIONS\b/.test(normalized)) return activeSection || "ABSOLUTE MAXIMUM RATINGS";
-  if (/\bINPUT VOLTAGE\b/.test(normalized) && /\bJUNCTION TEMPERATURE\b/.test(normalized)) return "RECOMMENDED OPERATING CONDITIONS";
-  if (/\bCONDITIONS\b/.test(normalized) && /\bMIN\b/.test(normalized) && /\bTYP\b/.test(normalized) && /\bMAX\b/.test(normalized)) return "ELECTRICAL CHARACTERISTICS";
+  
+  const countMatches = (regexes: RegExp[]) => regexes.filter((r) => r.test(normalized)).length;
+  
+  if (countMatches([/\bABSOLUTE\b/, /\bRATING\b/, /\bSTORAGE\b/, /\bPOWER DISSIPATION\b/, /\bJUNCTION TEMPERATURE\b/, /\bMAXIMUM\b/]) >= 2) {
+    return activeSection || "ABSOLUTE MAXIMUM RATINGS";
+  }
+  if (countMatches([/\bRECOMMENDED\b/, /\bOPERATING\b/, /\bCONDITIONS\b/, /\bINPUT VOLTAGE\b/, /\bAMBIENT TEMPERATURE\b/]) >= 2) {
+    return "RECOMMENDED OPERATING CONDITIONS";
+  }
+  const hasMinTypMax = /\b(MIN|TYP|MAX)\b/.test(normalized);
+  if (hasMinTypMax && countMatches([/\bMIN\b/, /\bTYP\b/, /\bMAX\b/, /\bTEST CONDITIONS\b/, /\bOUTPUT VOLTAGE\b/, /\bGROUND CURRENT\b/, /\bDROPOUT\b/]) >= 2) {
+    return "ELECTRICAL CHARACTERISTICS";
+  }
+  if (countMatches([/\bPAD\b/, /\bCOORDINATE\b/, /\bLOCATION\b/, /\bX\s+Y\b/, /\bBOND PAD\b/]) >= 2) {
+    return "PAD LOCATION AND COORDINATES";
+  }
+  if (countMatches([/\bASSEMBLY\b/, /\bSUBSTRATE\b/, /\bDIE ATTACH\b/, /\bWIRE BOND\b/, /\bBACKSIDE\b/]) >= 2) {
+    return "ASSEMBLY CHARACTERISTICS";
+  }
   return "";
 }
 
@@ -793,8 +818,31 @@ function compactFeatureAndApplicationSections(blocks: ExportBlock[], layoutOptio
 
 function extractCompactListItems(headingText: string, blocks: HtmlBlock[]) {
   if (blocks.length === 0) return [];
-  if (blocks.length > 1) return blocks.map((block) => normalizeTechnicalText(block.plainText ?? "").trim()).filter((value) => value.length > 0);
-  return splitCompactListText(normalizeTechnicalText(blocks[0].plainText ?? "").trim(), headingText);
+  const rawTexts = blocks.map((block) => normalizeTechnicalText(block.plainText ?? "").trim()).filter(Boolean);
+  if (rawTexts.length === 0) return [];
+
+  const merged: string[] = [rawTexts[0] || ""];
+
+  for (let i = 1; i < rawTexts.length; i++) {
+    const text = rawTexts[i] || "";
+    const prevText = merged[merged.length - 1] || "";
+
+    const prevEndsWithConj = /\b(with|for|to|and|or|of|in|at|by)\s*$/i.test(prevText);
+    const startsWithLowercase = /^[a-z]/.test(text);
+    const containsMeasurement = /\b\d+(?:\.\d+)?\s*(?:V|mV|A|mA|uA|µA|C|°C|W|mW|Hz|kHz|MHz)\b/i.test(text);
+    const startsWithBullet = /^[-•*]/.test(text);
+
+    const isContinuation = prevEndsWithConj && startsWithLowercase && !containsMeasurement && !startsWithBullet;
+
+    if (isContinuation && merged.length > 0) {
+      merged[merged.length - 1] = prevText + " " + text;
+    } else {
+      merged.push(text);
+    }
+  }
+
+  if (merged.length > 1) return merged;
+  return splitCompactListText(merged[0] || "", headingText);
 }
 
 function splitCompactListText(text: string, headingText: string) {
@@ -1059,7 +1107,7 @@ function shouldForceFigureFullWidth(text: string) {
   return /\b(pad location|bonding diagram|bonding|assembly|package outline|mechanical|block diagram)\b/i.test(text);
 }
 function isTechnicalDense(layoutOptions: RenderLayoutOptions) { return layoutOptions.layoutMode === "two-column" && layoutOptions.layoutDensity === "technical-dense"; }
-function resolvePageCapacity(layoutOptions: RenderLayoutOptions) { return isTechnicalDense(layoutOptions) ? PAGE_BODY_CAPACITY_DENSE : PAGE_BODY_CAPACITY; }
+export function resolvePageCapacity(layoutOptions: RenderLayoutOptions) { return isTechnicalDense(layoutOptions) ? PAGE_BODY_CAPACITY_DENSE : PAGE_BODY_CAPACITY; }
 function shouldKeepHeadingWithNext(nextNode?: Record<string, unknown>) { return !!nextNode && ["paragraph", "bulletList", "orderedList", "table", "image"].includes(String(nextNode.type ?? "")); }
 function isKeepWithNext(attrs: Record<string, unknown>) { return attrs.keepWithNext === true || attrs["data-keep-with-next"] === "true"; }
 function headingLevel(attrs: Record<string, unknown>) { const level = Number(attrs.level ?? 2); return level >= 1 && level <= 3 ? level : 2; }

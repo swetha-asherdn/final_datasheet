@@ -1,5 +1,7 @@
 import { Types } from "mongoose";
+import crypto from "crypto";
 import { AppError } from "@/lib/errors";
+import { callPythonDocxRebrandService } from "@/server/extraction/service";
 import { cleanupActionSchema, datasheetPatchSchema, editorJsonSchema, templateSettingsPatchSchema, type DatasheetPatch, type TemplateSettingsPatch, type TiptapJson } from "@/server/datasheet/schema";
 import { normalizeDatasheetExtraction, type CleanupItem, type NormalizablePage, type SourceCleanupReport } from "@/server/datasheet/normalization";
 import { createDefaultTemplateSettings } from "@/server/datasheet/template";
@@ -158,6 +160,41 @@ export async function updateTemplateForProject(params: { projectId: string; owne
     { _id: ids.projectObjectId, ownerId: ids.ownerObjectId },
     { $set: { templateSummary: { productCode: template.productCode, productTitle: template.productTitle, revision: template.revision, documentStatus: template.documentStatus } } }
   );
+
+  // Call the Python worker to rebrand the DOCX package in S3 (colors, logo, metadata)
+  const project = await ProjectModel.findOne({ _id: ids.projectObjectId, ownerId: ids.ownerObjectId });
+  if (project && project.editableDocx?.storageKey) {
+    try {
+      const rebrandResult = await callPythonDocxRebrandService({
+        projectId: params.projectId,
+        ownerId: params.ownerId,
+        docxStorageKey: project.editableDocx.storageKey,
+        branding: {
+          companyName: template.companyName,
+          logoStorageKey: template.logoStorageKey || null,
+          productCode: template.productCode,
+          productTitle: template.productTitle,
+          documentStatus: template.documentStatus,
+          revision: template.revision,
+          primaryColor: template.primaryColor,
+          accentColor: template.accentColor
+        }
+      });
+
+      await ProjectModel.updateOne(
+        { _id: project._id },
+        {
+          $set: {
+            "editableDocx.fileSize": rebrandResult.fileSize,
+            "editableDocx.lastSavedAt": new Date()
+          }
+        }
+      );
+    } catch (rebrandErr) {
+      console.error("[updateTemplateForProject] Programmatic DOCX rebranding failed:", rebrandErr);
+    }
+  }
+
   return getDatasheetForProject(params);
 }
 
@@ -215,12 +252,17 @@ async function getNormalizedExtraction(ids: { projectObjectId: Types.ObjectId; o
   return { run, normalized: normalizeDatasheetExtraction(pages.map(toNormalizablePage)) };
 }
 
-function applyDocumentPatch(document: { title: string; productCode: string; productCategory: string; editorJson: unknown; status: string }, patch: DatasheetPatch) {
+function applyDocumentPatch(document: any, patch: DatasheetPatch) {
   if (patch.title !== undefined) document.title = patch.title;
   if (patch.productCode !== undefined) document.productCode = patch.productCode;
   if (patch.productCategory !== undefined) document.productCategory = patch.productCategory;
   if (patch.status !== undefined) document.status = patch.status;
-  if (patch.editorJson !== undefined) document.editorJson = editorJsonSchema.parse(patch.editorJson);
+  if (patch.editorJson !== undefined) {
+    document.editorJson = editorJsonSchema.parse(patch.editorJson);
+    if (typeof document.markModified === "function") {
+      document.markModified("editorJson");
+    }
+  }
 }
 
 function applyTemplatePatch(template: Record<string, unknown>, patch: TemplateSettingsPatch) {
@@ -252,11 +294,25 @@ function appendRestoredItem(editorJson: TiptapJson, item: CleanupItem): TiptapJs
   return { ...editorJson, content: [...(editorJson.content ?? []), restoredNode] };
 }
 
+function generateDocxToken(projectId: string) {
+  const secret = process.env.NEXTAUTH_SECRET || "fallback-secret";
+  return crypto.createHmac("sha256", secret).update(projectId).digest("hex");
+}
+
+function getAppUrl() {
+  const isDocker = process.env.DOCKER_ENV === "true";
+  return isDocker ? "http://web:3000" : (process.env.NEXTAUTH_URL || "http://localhost:3000");
+}
+
 function serializeDatasheetBundle(document: Record<string, unknown>, template: Record<string, unknown>) {
+  const projectIdStr = String(document.projectId);
+  const token = generateDocxToken(projectIdStr);
+  const appUrl = getAppUrl();
+  
   return {
     document: {
       id: String(document._id),
-      projectId: String(document.projectId),
+      projectId: projectIdStr,
       extractionRunId: String(document.extractionRunId),
       schemaVersion: String(document.schemaVersion),
       status: String(document.status),
@@ -268,7 +324,13 @@ function serializeDatasheetBundle(document: Record<string, unknown>, template: R
       createdFromExtractionAt: new Date(document.createdFromExtractionAt as Date).toISOString(),
       lastSavedAt: new Date(document.lastSavedAt as Date).toISOString()
     },
-    template: serializeTemplate(template)
+    template: serializeTemplate(template),
+    onlyOfficeConfig: {
+      onlyOfficeUrl: process.env.NEXT_PUBLIC_ONLYOFFICE_URL || "http://localhost:8080",
+      downloadUrl: `${appUrl}/api/projects/${projectIdStr}/datasheet/download-docx?token=${token}`,
+      callbackUrl: `${appUrl}/api/projects/${projectIdStr}/datasheet/onlyoffice-callback`,
+      token
+    }
   };
 }
 

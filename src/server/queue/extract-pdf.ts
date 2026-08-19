@@ -4,7 +4,12 @@ import { env } from "@/lib/env";
 export const EXTRACT_PDF_QUEUE = "extract-pdf";
 let queue: Queue | null = null;
 
-export type ExtractPdfJobData = { projectId: string; ownerId: string; storageKey: string };
+export type ExtractPdfJobData = {
+  projectId: string;
+  ownerId: string;
+  storageKey: string;
+  extractionEngine?: "native" | "google_doc_ai" | "gemini_vision";
+};
 
 export function getRedisConnection(): ConnectionOptions {
   const url = new URL(env.REDIS_URL);

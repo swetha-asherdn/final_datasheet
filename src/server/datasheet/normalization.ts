@@ -1219,7 +1219,12 @@ function normalizeSectionListContent(known: Map<string, Array<Record<string, unk
       if (String(node.type ?? "") === "bulletList") {
         for (const item of extractListItemTexts(node)) {
           const parts = splitFigureCaptionFromText(item);
-          if (parts.before) addCompactListText(listItems, parts.before);
+          if (parts.before) {
+            const normalized = normalizeTechnicalText(parts.before);
+            if (normalized && !isSectionHeading(normalized)) {
+              listItems.push(normalized);
+            }
+          }
           if (parts.caption) {
             flushList();
             retained.push(createCaptionParagraph(parts.caption));
@@ -1268,9 +1273,11 @@ function addCompactListText(items: string[], text: string) {
 
 function shouldMergeWrappedListItem(previous: string, next: string) {
   const words = next.split(/\s+/).filter(Boolean);
-  if (words.length <= 2) return true;
-  if (/\b(with|for|to|and|or|of|in)$/i.test(previous)) return true;
-  return previous.length < 72 && /^[A-Z][A-Za-z-]+/.test(next) && !/[.!?:;]$/.test(previous);
+  if (words.length <= 1) return true;
+  if (/^[a-z]/.test(next)) return true;
+  if (/\b(with|for|to|and|or|of|in|at|by|from|with|without|through|during|including)$/i.test(previous)) return true;
+  if (/[-,\/]$/.test(previous)) return true;
+  return false;
 }
 
 function createBulletListNode(items: string[]): Record<string, unknown> {

@@ -25,6 +25,15 @@ const extractionSummarySchema = new Schema(
   { _id: false }
 );
 
+const editableDocxSchema = new Schema(
+  {
+    storageKey: { type: String, default: null },
+    fileSize: { type: Number, default: null },
+    lastSavedAt: { type: Date, default: null }
+  },
+  { _id: false }
+);
+
 const projectSchema = new Schema(
   {
     ownerId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
@@ -32,6 +41,7 @@ const projectSchema = new Schema(
     description: { type: String, default: "", trim: true },
     status: { type: String, enum: PROJECT_STATUSES, required: true, default: "DRAFT", index: true },
     originalPdf: { type: originalPdfSchema, required: true },
+    editableDocx: { type: editableDocxSchema, default: null },
     latestExtractionRunId: { type: Schema.Types.ObjectId, ref: "ExtractionRun", default: null },
     latestDatasheetDocumentId: { type: Schema.Types.ObjectId, ref: "DatasheetDocument", default: null },
     composerStatus: { type: String, enum: ["NOT_CREATED", "READY_FOR_EDIT", "EDITING", "READY_FOR_EXPORT", "EXPORTED"], default: "NOT_CREATED", index: true },

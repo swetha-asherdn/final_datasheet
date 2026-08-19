@@ -22,7 +22,7 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
   const signedUrl = await createSignedReadUrl(pdf.storageKey);
 
   return (
-    <main className="mx-auto max-w-7xl px-4 py-8">
+    <main className="mx-auto max-w-[1760px] px-4 py-8 w-full">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <Link href="/dashboard" className="text-sm font-medium text-primary hover:underline">Back to dashboard</Link>

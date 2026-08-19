@@ -5,7 +5,7 @@ import { connectToDatabase } from "@/server/db";
 import { ProjectModel } from "@/server/models/project";
 import { ProcessingJobModel } from "@/server/models/processing-job";
 import { ExtractionRunModel } from "@/server/models/extraction-run";
-import { callPythonExtractionService, createSafeErrorSummary, persistExtractionManifest } from "@/server/extraction/service";
+import { callPythonExtractionService, callPythonDocxConversionService, createSafeErrorSummary, persistExtractionManifest } from "@/server/extraction/service";
 
 async function updateProgress(projectId: string, progress: number, status: "QUEUED" | "PROCESSING" | "COMPLETED" | "FAILED") {
   const projectStatus = status === "COMPLETED" ? "REVIEW_REQUIRED" : status === "FAILED" ? "FAILED" : status;
@@ -50,12 +50,52 @@ export async function processExtractionJob(data: ExtractPdfJobData, job?: Job<Ex
       storageKey: project.originalPdf.storageKey,
       originalFileName: project.originalPdf.originalFileName,
       mimeType: "application/pdf"
-    }
+    },
+    extractionEngine: data.extractionEngine ?? "native"
   });
 
-  await updateProgress(data.projectId, 80, "PROCESSING");
-  await job?.updateProgress(80);
+  await updateProgress(data.projectId, 70, "PROCESSING");
+  await job?.updateProgress(70);
   await persistExtractionManifest({ projectId: data.projectId, ownerId: data.ownerId, manifest });
+  
+  await updateProgress(data.projectId, 85, "PROCESSING");
+  await job?.updateProgress(85);
+
+  try {
+    const docxResult = await callPythonDocxConversionService({
+      projectId: data.projectId,
+      ownerId: data.ownerId,
+      source: {
+        storageKey: project.originalPdf.storageKey,
+        originalFileName: project.originalPdf.originalFileName,
+        mimeType: "application/pdf"
+      }
+    });
+
+    await ProjectModel.updateOne(
+      { _id: project._id },
+      {
+        $set: {
+          editableDocx: {
+            storageKey: docxResult.storageKey,
+            fileSize: docxResult.fileSize,
+            lastSavedAt: new Date()
+          }
+        }
+      }
+    );
+  } catch (docxError) {
+    console.error("[worker] PDF to DOCX conversion failed:", docxError);
+    await ProjectModel.updateOne(
+      { _id: project._id },
+      {
+        $set: {
+          lastError: docxError instanceof Error ? docxError.message : "PDF to DOCX conversion failed"
+        }
+      }
+    );
+  }
+
   await ExtractionRunModel.updateOne({ _id: run._id }, { $set: { status: "COMPLETED", completedAt: new Date(), errorSummary: null } });
   await updateProgress(data.projectId, 100, "COMPLETED");
   await job?.updateProgress(100);
