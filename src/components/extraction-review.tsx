@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useTransition } from "react";
-import { AlertTriangle, Bot, FileText, ImageIcon, RefreshCcw, Sparkles, Table2, Zap } from "lucide-react";
+import { AlertTriangle, Bot, FileText, ImageIcon, Sparkles, Table2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 

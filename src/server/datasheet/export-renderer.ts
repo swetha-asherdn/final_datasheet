@@ -676,7 +676,9 @@ function createBlocksForNode(node: Record<string, unknown>, nextNode: Record<str
   const plainText = normalizeTechnicalText(getPlainText(node).replace(/\s+/g, " ").trim());
   if (type === "paragraph") {
     if (attrs.class === "image-caption" && isGenericSourceCaption(node)) return [];
-    if (!content.trim() || !plainText || isGenericCaptionText(plainText)) return [];
+    if (!plainText || isGenericCaptionText(plainText)) return [];
+    if (shouldExcludeExportText(plainText)) return [];
+    if (!content.trim()) return [];
     const role = attrs.class === "image-caption" || looksLikeFigureCaption(plainText) ? "caption" : "paragraph";
     const columnEligible = role === "caption" ? plainText.length <= 88 : true;
     return [{ kind: "html", role, html: `<p${classAttribute(attrs)}>${content}</p>`, estimatedHeight: estimateParagraphHeight(node, attrs, layoutOptions), keepWithNext: isKeepWithNext(attrs), meaningful: true, plainText, columnEligible, fullWidth: false }];
@@ -799,7 +801,9 @@ function compactFeatureAndApplicationSections(blocks: ExportBlock[], layoutOptio
     let cursor = index + 1;
     while (cursor < blocks.length) {
       const next = blocks[cursor];
-      if (!(next.kind === "html") || next.role !== "paragraph") break;
+      if (!(next.kind === "html")) break;
+      if (next.role === "heading") break;
+      if (next.role !== "paragraph") break;
       if (!next.plainText || next.plainText.length > 260) break;
       collected.push(next);
       cursor += 1;
@@ -857,7 +861,7 @@ function splitCompactListText(text: string, headingText: string) {
     const previous = current[current.length - 1] ?? "";
     const currentText = current.join(" ");
     const startsLikeItem = /^[A-Z][A-Za-z0-9-]*/.test(token);
-    const shouldSplit = startsLikeItem && current.length >= 2 && !blockers.has(previous.toLowerCase()) && (/\d|[%)]$/.test(previous) || current.length >= 3 || currentText.length >= 18);
+    const shouldSplit = startsLikeItem && current.length >= 2 && !blockers.has(previous.toLowerCase()) && (/\d|[%)]$/.test(previous) || current.length >= 3 || currentText.length >= 20);
     if (shouldSplit) {
       items.push(currentText);
       current = [token];
@@ -1016,7 +1020,10 @@ function renderNode(node: Record<string, unknown>): string {
 }
 
 function renderTextNode(node: Record<string, unknown>) {
-  let html = applyTechnicalVariableMarkup(escapeHtml(normalizeTechnicalText(String(node.text ?? ""))));
+  const text = String(node.text ?? "");
+  if (shouldExcludeExportText(text)) return "";
+
+  let html = applyTechnicalVariableMarkup(escapeHtml(normalizeTechnicalText(text)));
   const marks = Array.isArray(node.marks) ? node.marks as Array<Record<string, unknown>> : [];
   for (const mark of marks) {
     const type = String(mark.type ?? "");
@@ -1029,6 +1036,22 @@ function renderTextNode(node: Record<string, unknown>) {
     else if (type === "link") html = `<a href="${escapeAttribute(safeHref(String(attrs.href ?? "#")))}">${html}</a>`;
   }
   return html;
+}
+
+function shouldExcludeExportText(value: string) {
+  const text = value.trim();
+  if (!text || text === "Vellore Semicon" || text === "Vellore") return false;
+  if (/^(?:https?:\/\/|www\.)/i.test(text) || /(?:\.com|\.in|\.org|\.net)(?:\/|\b)/i.test(text)) return true;
+  if (/\b(?:scan me|qr|barcode|logo)\b/i.test(text)) return true;
+
+  const brandKeywords = /\b(?:semiconductor|electronics|technology|industries|microelectronics|integrated|company|corp|ltd|inc|group|precision|circuits|associates)\b/i;
+  const technicalKeywords = /\b(?:regulator|converter|amplifier|sensor|controller|driver|diode|transistor|memory|processor|module|switch|oscillator|reference|detector|ic|ics|mcu|mosfet|ldo|voltage|current|output|input|temperature|systems|solutions|components|devices)\b/i;
+  const allUpper = /^[A-Z0-9&.'\-\s]+$/;
+  const brandCandidate = brandKeywords.test(text) && !technicalKeywords.test(text);
+  if (brandCandidate && (allUpper.test(text) || text.split(/\s+/).length <= 4)) return true;
+
+  const supplierNamePattern = /^(?:[A-Z][A-Za-z0-9&.'-]*\s+){1,3}[A-Z][A-Za-z0-9&.'-]*$/;
+  return supplierNamePattern.test(text) && brandKeywords.test(text) && !technicalKeywords.test(text);
 }
 
 function extractImageMeta(attrs: Record<string, unknown>): ImageMeta {

@@ -23,6 +23,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { replaceProductCodeTokens, type ProductCodeReplacementMode } from "@/lib/product-code-replacement";
+import { applySupplierProductCodeMappings, buildSuggestedSupplierMappings, detectSupplierProductCodesFromEditorJson, type SupplierCodeMapping } from "@/lib/supplier-product-code-mapping";
 
 type ProjectStatus = "DRAFT" | "UPLOADED" | "QUEUED" | "PROCESSING" | "REVIEW_REQUIRED" | "FAILED";
 type ComposerTab = "extraction" | "editor" | "paged-layout" | "paged-preview" | "template" | "cleanup" | "export";
@@ -253,6 +255,9 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
 
   useEffect(() => {
     if (loadState === "ready" && bundle) {
+      if (["REVIEW_REQUIRED", "COMPLETED"].includes(status) && tab === "extraction") {
+        setTab("export");
+      }
       void loadLayout();
       return;
     }
@@ -260,7 +265,7 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
     setLayoutState("idle");
     setPreviewMode("auto");
     setExportMode("auto");
-  }, [bundle?.document.id, loadState, projectId]);
+  }, [bundle?.document.id, loadState, projectId, status, tab]);
 
   async function loadDatasheet() {
     setLoadState("loading");
@@ -602,16 +607,15 @@ function DatasheetEditor({ projectId, bundle, saveState, saveError, onDirtyChang
     const docJson = editor.getJSON();
     const brandRegex = new RegExp(escapeRegExp(brandText.trim()), "gi");
     let count = 0;
-    function traverseAndReplace(node: any) {
+    function traverseAndReplace(node: JSONContent): void {
       if (node.type === "text" && typeof node.text === "string") {
-        const original = node.text;
         node.text = node.text.replace(brandRegex, () => {
           count++;
           return "";
         });
       }
       if (Array.isArray(node.content)) {
-        node.content.forEach(traverseAndReplace);
+        node.content.forEach((child) => traverseAndReplace(child as JSONContent));
       }
     }
     traverseAndReplace(docJson);
@@ -636,9 +640,9 @@ function DatasheetEditor({ projectId, bundle, saveState, saveError, onDirtyChang
 
     const docJson = editor.getJSON();
     let count = 0;
-    function removeImageNodes(node: any): any {
+    function removeImageNodes(node: JSONContent): JSONContent {
       if (Array.isArray(node.content)) {
-        node.content = node.content.filter((child: any) => {
+        node.content = node.content.filter((child) => {
           if (child.type === "image") {
             count++;
             return false;
@@ -647,8 +651,8 @@ function DatasheetEditor({ projectId, bundle, saveState, saveError, onDirtyChang
             return false;
           }
           return true;
-        });
-        node.content.forEach(removeImageNodes);
+        }) as JSONContent[];
+        node.content.forEach((child) => removeImageNodes(child as JSONContent));
       }
       return node;
     }
@@ -681,14 +685,14 @@ function DatasheetEditor({ projectId, bundle, saveState, saveError, onDirtyChang
     const uncertainTexts = new Set(uncertain.filter(item => item.itemType === "text" && item.text).map(item => item.text!.trim()));
     const uncertainImageIds = new Set(uncertain.filter(item => item.itemType === "image").map(item => item.id));
 
-    function filterUncertainNodes(node: any): any {
+    function filterUncertainNodes(node: JSONContent): JSONContent {
       if (Array.isArray(node.content)) {
-        node.content = node.content.filter((child: any) => {
+        node.content = node.content.filter((child) => {
           if (child.type === "image") {
-            const src = child.attrs?.src ?? "";
+            const src = String(child.attrs?.src ?? "");
             const match = src.match(/\/images\/([^/]+)/);
             const imageId = match ? decodeURIComponent(match[1]) : "";
-            if (uncertainImageIds.has(imageId) || uncertainImageIds.has(child.attrs?.title)) {
+            if (uncertainImageIds.has(imageId) || uncertainImageIds.has(String(child.attrs?.title ?? ""))) {
               imageCount++;
               return false;
             }
@@ -701,8 +705,8 @@ function DatasheetEditor({ projectId, bundle, saveState, saveError, onDirtyChang
             }
           }
           return true;
-        });
-        node.content.forEach(filterUncertainNodes);
+        }) as JSONContent[];
+        node.content.forEach((child) => filterUncertainNodes(child as JSONContent));
       }
       return node;
     }
@@ -820,6 +824,7 @@ function DatasheetEditor({ projectId, bundle, saveState, saveError, onDirtyChang
         <CardContent className="space-y-3">
           <EditorToolbar projectId={projectId} editor={editor} selectedBlock={selectedBlock} onMutate={markEditorDirty} onOpenPagedLayout={onOpenPagedLayout} />
           <CodeReplacePanel editor={editor} onMutate={markEditorDirty} />
+          <SupplierCodeMappingPanel editor={editor} editorDoc={editorDoc} onMutate={markEditorDirty} />
           <div className="flex flex-wrap items-center gap-3 rounded-md border bg-slate-50 px-3 py-2 text-xs">
             <span className="font-semibold text-slate-700">Layout:</span>
             <div className="flex gap-1">
@@ -1159,74 +1164,112 @@ function ExportHistoryRow({ item }: { item: DatasheetExport }) {
   );
 }
 
-type CodeMatchMode = "starts-with" | "ends-with" | "exact" | "contains";
+type CodeMatchMode = ProductCodeReplacementMode;
 
-function replaceInJsonContent(node: JSONContent, matcher: (text: string) => boolean, replacer: (text: string) => string): { node: JSONContent; count: number } {
+function replaceSupplierCodeMappingsInJsonContent(node: JSONContent, mappings: SupplierCodeMapping[]): { node: JSONContent; count: number; warnings: string[] } {
+  const confirmedMappings = mappings.filter((mapping) => mapping.status === "confirmed");
+  if (confirmedMappings.length === 0) {
+    return { node, count: 0, warnings: [] };
+  }
+
+  let totalCount = 0;
+  const warnings: string[] = [];
+
+  if (node.type === "text" && typeof node.text === "string") {
+    const result = applySupplierProductCodeMappings({
+      text: node.text,
+      mappings: confirmedMappings,
+    });
+
+    if (result.replacedCount > 0) {
+      totalCount += result.replacedCount;
+      warnings.push(...result.warnings);
+      return { node: { ...node, text: result.text }, count: result.replacedCount, warnings: result.warnings };
+    }
+
+    if (result.warnings.length > 0) {
+      warnings.push(...result.warnings);
+    }
+
+    return { node, count: 0, warnings: result.warnings };
+  }
+
+  if (Array.isArray(node.content)) {
+    let count = 0;
+    const newContent = node.content.map((child) => {
+      const result = replaceSupplierCodeMappingsInJsonContent(child, confirmedMappings);
+      count += result.count;
+      warnings.push(...result.warnings);
+      return result.node;
+    });
+
+    return {
+      node: count > 0 ? { ...node, content: newContent } : node,
+      count,
+      warnings,
+    };
+  }
+
+  return { node, count: totalCount, warnings };
+}
+
+function replaceInJsonContent(node: JSONContent, pattern: string, replacement: string, mode: CodeMatchMode): { node: JSONContent; count: number; warnings: string[] } {
   let count = 0;
+  const warnings: string[] = [];
+
   if (node.type === "text" && typeof node.text === "string") {
     const original = node.text;
-    const replaced = original.replace(/\S+/g, (word) => {
-      // Strip trailing punctuation for matching, keep punctuation in output
-      const trailingPunct = word.match(/([.,;:!?)]+)$/);
-      const core = trailingPunct ? word.slice(0, word.length - trailingPunct[0].length) : word;
-      if (matcher(core)) {
-        count++;
-        return replacer(core) + (trailingPunct ? trailingPunct[0] : "");
-      }
-      return word;
+    const result = replaceProductCodeTokens({
+      text: original,
+      find: pattern,
+      replaceWith: replacement,
+      mode,
     });
-    return { node: replaced !== original ? { ...node, text: replaced } : node, count };
+
+    if (result.replacedCount > 0) {
+      count += result.replacedCount;
+      return { node: { ...node, text: result.text }, count, warnings: result.warnings };
+    }
+
+    if (result.warnings.length > 0) {
+      return { node, count: 0, warnings: result.warnings };
+    }
+
+    return { node, count: 0, warnings: [] };
   }
+
   if (Array.isArray(node.content)) {
     let totalCount = 0;
     const newContent = node.content.map((child) => {
-      const result = replaceInJsonContent(child, matcher, replacer);
+      const result = replaceInJsonContent(child, pattern, replacement, mode);
       totalCount += result.count;
+      warnings.push(...result.warnings);
       return result.node;
     });
-    return { node: totalCount > 0 ? { ...node, content: newContent } : node, count: totalCount };
+    return { node: totalCount > 0 ? { ...node, content: newContent } : node, count: totalCount, warnings };
   }
-  return { node, count };
+
+  return { node, count, warnings };
 }
 
 function CodeReplacePanel({ editor, onMutate }: { editor: Editor | null; onMutate: () => void }) {
   const [find, setFind] = useState("");
   const [replaceTo, setReplaceTo] = useState("");
   const [mode, setMode] = useState<CodeMatchMode>("starts-with");
-  const [lastResult, setLastResult] = useState<{ count: number; find: string } | null>(null);
+  const [lastResult, setLastResult] = useState<{ count: number; find: string; warning?: string | null } | null>(null);
   const [open, setOpen] = useState(false);
-
-  function buildMatcher(pattern: string, m: CodeMatchMode): (text: string) => boolean {
-    if (!pattern) return () => false;
-    switch (m) {
-      case "starts-with": return (t) => t.startsWith(pattern);
-      case "ends-with":   return (t) => t.endsWith(pattern);
-      case "exact":       return (t) => t === pattern;
-      case "contains":    return (t) => t.includes(pattern);
-    }
-  }
-
-  function buildReplacer(pattern: string, replacement: string, m: CodeMatchMode): (text: string) => string {
-    switch (m) {
-      case "starts-with": return (t) => replacement + t.slice(pattern.length);
-      case "ends-with":   return (t) => t.slice(0, t.length - pattern.length) + replacement;
-      case "exact":       return () => replacement;
-      case "contains":    return (t) => t.split(pattern).join(replacement);
-    }
-  }
 
   function handleReplace() {
     if (!editor || !find.trim()) return;
     const pattern = find.trim();
-    const matcher = buildMatcher(pattern, mode);
-    const replacer = buildReplacer(pattern, replaceTo.trim(), mode);
+    const replacement = replaceTo.trim();
     const currentJson = editor.getJSON() as JSONContent;
-    const { node: newJson, count } = replaceInJsonContent(currentJson, matcher, replacer);
+    const { node: newJson, count, warnings } = replaceInJsonContent(currentJson, pattern, replacement, mode);
     if (count > 0) {
       editor.commands.setContent(newJson, { emitUpdate: false });
       onMutate();
     }
-    setLastResult({ count, find: pattern });
+    setLastResult({ count, find: pattern, warning: warnings[0] ?? null });
   }
 
   const modeLabels: Record<CodeMatchMode, string> = {
@@ -1298,11 +1341,141 @@ function CodeReplacePanel({ editor, onMutate }: { editor: Editor | null; onMutat
           </Button>
         </div>
         {lastResult !== null ? (
-          <p className={`text-[11px] font-medium ${ lastResult.count > 0 ? "text-emerald-700" : "text-slate-500" }`}>
-            {lastResult.count > 0
-              ? `✓ Replaced ${lastResult.count} occurrence${lastResult.count !== 1 ? "s" : ""} of "${lastResult.find}"`
-              : `No occurrences of "${lastResult.find}" found.`}
-          </p>
+          <>
+            <p className={`text-[11px] font-medium ${ lastResult.count > 0 ? "text-emerald-700" : "text-slate-500" }`}>
+              {lastResult.count > 0
+                ? `✓ Replaced ${lastResult.count} occurrence${lastResult.count !== 1 ? "s" : ""} of "${lastResult.find}"`
+                : lastResult.warning
+                  ? lastResult.warning
+                  : `No occurrences of "${lastResult.find}" found.`}
+            </p>
+            {lastResult.warning && lastResult.count === 0 ? <p className="text-[10px] text-amber-700">Replacement was skipped to avoid partial or unsafe product-code matches.</p> : null}
+          </>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+function SupplierCodeMappingPanel({ editor, editorDoc, onMutate }: { editor: Editor | null; editorDoc: JSONContent; onMutate: () => void }) {
+  const [mappings, setMappings] = useState<SupplierCodeMapping[]>([]);
+  const [result, setResult] = useState<{ count: number; warnings: string[]; message: string } | null>(null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!editorDoc) {
+      setMappings([]);
+      return;
+    }
+
+    const detected = buildSuggestedSupplierMappings(detectSupplierProductCodesFromEditorJson(editorDoc));
+    setMappings(detected.map((mapping) => ({ ...mapping, status: "pending" })));
+  }, [editorDoc]);
+
+  function updateMapping(id: string, next: Partial<SupplierCodeMapping>) {
+    setMappings((current) => current.map((item) => (item.id === id ? { ...item, ...next } : item)));
+  }
+
+  function applyConfirmedMappings() {
+    if (!editor || mappings.length === 0) return;
+
+    const confirmed = mappings.filter((mapping) => mapping.status === "confirmed");
+    if (confirmed.length === 0) {
+      setResult({ count: 0, warnings: [], message: "No confirmed supplier-code mappings selected yet. Review the list and mark each row as confirmed before applying." });
+      return;
+    }
+
+    const currentJson = editor.getJSON() as JSONContent;
+    const { node: newJson, count, warnings } = replaceSupplierCodeMappingsInJsonContent(currentJson, confirmed);
+    if (count > 0) {
+      editor.commands.setContent(newJson, { emitUpdate: false });
+      onMutate();
+      setResult({ count, warnings, message: `Applied ${count} safe replacement${count === 1 ? "" : "s"} across ${confirmed.length} confirmed supplier-code mapping${confirmed.length === 1 ? "" : "s"}.` });
+      return;
+    }
+
+    setResult({
+      count: 0,
+      warnings,
+      message: warnings[0] ?? "No safe replacements were applied. The detected supplier codes are ambiguous or not present in the current document body.",
+    });
+  }
+
+  return (
+    <details className="rounded-md border border-violet-200 bg-violet-50/70 text-xs" open={open} onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
+      <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-2 font-semibold text-violet-800 hover:bg-violet-100/70 transition rounded-md">
+        <span className="text-base">🧩</span> Supplier Product Code Mapping
+        <span className="ml-auto text-[10px] font-normal text-violet-600">{open ? "▲ collapse" : "▼ expand"}</span>
+      </summary>
+      <div className="space-y-3 px-4 pb-4 pt-2">
+        <p className="text-[11px] text-violet-700 leading-snug">Review likely supplier product codes detected in the editor, edit the Vellore replacement code if needed, and confirm each mapping before applying exact safe replacements.</p>
+        {mappings.length === 0 ? (
+          <p className="rounded-md border border-dashed border-violet-200 bg-white/60 p-2 text-[11px] text-violet-700">No likely supplier-product-code matches were detected in the current editor content.</p>
+        ) : (
+          <div className="space-y-2">
+            {mappings.map((mapping) => (
+              <div key={mapping.id} className="rounded-md border border-violet-200 bg-white p-2 shadow-sm">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-[11px] font-medium text-slate-700">
+                    <span className="rounded bg-violet-100 px-1.5 py-0.5 text-violet-700">{mapping.pageNumber}</span>
+                    <span>{mapping.section}</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => updateMapping(mapping.id, { status: "confirmed" })}
+                      className={`rounded px-2 py-1 text-[10px] font-medium border ${mapping.status === "confirmed" ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white text-slate-600"}`}
+                    >
+                      Confirm
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateMapping(mapping.id, { status: "ignored" })}
+                      className={`rounded px-2 py-1 text-[10px] font-medium border ${mapping.status === "ignored" ? "border-red-300 bg-red-50 text-red-700" : "border-slate-200 bg-white text-slate-600"}`}
+                    >
+                      Ignore
+                    </button>
+                  </div>
+                </div>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Supplier code</label>
+                    <Input value={mapping.supplierCode} readOnly className="h-8 text-xs font-mono bg-slate-50" />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Vellore code</label>
+                    <Input
+                      value={mapping.velloreCode}
+                      onChange={(e) => updateMapping(mapping.id, { velloreCode: e.target.value })}
+                      className="h-8 text-xs font-mono"
+                    />
+                  </div>
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                  <span>Confidence: {mapping.confidence.toFixed(2)}</span>
+                  <span className="capitalize">Status: {mapping.status}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {mappings.length > 0 ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-violet-200 bg-white p-2">
+            <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Ready to apply</span>
+            <Button type="button" size="sm" className="bg-violet-600 hover:bg-violet-700 text-white" onClick={applyConfirmedMappings} disabled={!editor || mappings.every((mapping) => mapping.status !== "confirmed")}>
+              Apply confirmed mappings
+            </Button>
+          </div>
+        ) : null}
+        {result ? (
+          <div className="rounded-md border border-violet-200 bg-white p-2">
+            <p className={`text-[11px] font-medium ${result.count > 0 ? "text-emerald-700" : "text-violet-700"}`}>{result.message}</p>
+            {result.warnings.length > 0 ? (
+              <ul className="mt-2 list-disc pl-4 text-[10px] text-amber-700">
+                {result.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+              </ul>
+            ) : null}
+          </div>
         ) : null}
       </div>
     </details>
@@ -1381,7 +1554,6 @@ function InsertImagePicker({ projectId, editor, onMutate, onClose }: { projectId
                         className="group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50 transition hover:border-blue-400 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-400"
                         title={`Page ${img.pageNumber} · ${img.width}×${img.height}`}
                       >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={img.url}
                           alt={`Page ${img.pageNumber}`}
@@ -1630,14 +1802,6 @@ function moveSelectedBlock(editor: Editor, direction: -1 | 1) {
   const selected = getSelectedBlockState(editor);
   if (!selected) return false;
   return moveTopLevelBlockAt(editor, selected.index, direction);
-}
-
-function moveBlockById(editor: Editor, blockId: string, direction: -1 | 1) {
-  const doc = ensureEditorJsonHasBlockIds(editor.getJSON());
-  const nodes = Array.isArray(doc.content) ? [...doc.content] : [];
-  const index = nodes.findIndex((node) => isObjectRecord(node?.attrs) && node.attrs.blockId === blockId);
-  if (index < 0) return false;
-  return moveTopLevelBlockAt(editor, index, direction);
 }
 
 function moveSectionById(editor: Editor, blockId: string, direction: -1 | 1) {

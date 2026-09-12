@@ -321,6 +321,25 @@ describe("DatasheetComposer", () => {
   });
 
 
+  it("opens the export panel automatically for a completed project with a ready datasheet", async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/api/projects/project-1/datasheet") && !init?.method) return jsonResponse(initialBundle, 200);
+      if (url.endsWith("/api/projects/project-1/datasheet/export") && !init?.method) return jsonResponse({ exports: [completedExport] }, 200);
+      if (url.endsWith("/api/projects/project-1/datasheet/layout") && !init?.method) return new Response(JSON.stringify({ error: { code: "DATASHEET_LAYOUT_NOT_FOUND" } }), { status: 404 });
+      if (url.endsWith("/api/projects/project-1/datasheet/export/pdf")) return jsonResponse(completedExport, 201);
+      return jsonResponse({ run: null, pages: [], pagination: { page: 1, pageSize: 0, total: 0, pageCount: 0 } }, 200);
+    });
+
+    await act(async () => {
+      root.render(<DatasheetComposer projectId="project-1" status="COMPLETED" originalPdfUrl="/original.pdf" />);
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Branded PDF Export");
+    expect(container.textContent).toContain("Download PDF");
+  });
+
   it("exports a branded PDF and shows download history", async () => {
     await createDatasheet();
     await act(async () => clickButton("Exports"));

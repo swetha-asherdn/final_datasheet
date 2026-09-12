@@ -397,10 +397,19 @@ function classifyTextBlock(page: NormalizablePage, block: NormalizableTextBlock,
   if (region === "footer" && hasRevisionOrDate(block.text)) reasons.push("DATE_REVISION_FOOTER");
   if (repeated && region === "header") reasons.push("REPEATED_HEADER_TEXT");
   if (repeated && region === "footer") reasons.push("REPEATED_FOOTER_TEXT");
+  if (looksLikeSupplierBrandName(block.text) && (region === "header" || region === "footer" || repeated)) {
+    reasons.push("BRAND_COMPANY_NAME");
+  }
+  if (looksLikeSupplierProductHeader(block.text) && (region === "header" || region === "footer" || repeated)) {
+    reasons.push("BRAND_PRODUCT_CODE_HEADER");
+  }
 
   if (reasons.length > 0) {
-    const confidence = reasons.some((reason) => reason === "PAGE_NUMBER" || reason === "URL_IN_FOOTER") ? 0.94 : repeated ? 0.82 : 0.68;
-    const decision: CleanupDecision = confidence >= 0.75 || page.pageNumber > 1 ? "removed" : "uncertain";
+    const confidence = reasons.includes("BRAND_COMPANY_NAME") || reasons.includes("BRAND_PRODUCT_CODE_HEADER") ? 0.9
+      : reasons.some((reason) => reason === "PAGE_NUMBER" || reason === "URL_IN_FOOTER") ? 0.94
+      : repeated ? 0.82
+      : 0.68;
+    const decision: CleanupDecision = confidence >= 0.8 || page.pageNumber > 1 ? "removed" : "uncertain";
     return { block, decision, reasons, confidence };
   }
 
@@ -414,13 +423,15 @@ function classifyImage(page: NormalizablePage, image: NormalizableImage, pageCou
   const region = pageRegion(page, image.boundingBox);
   const repeated = (frequency.get(imageSignature(image, region)) ?? 0) >= Math.max(2, Math.ceil(pageCount * 0.5));
   const smallBrandingCandidate = image.width <= 420 && image.height <= 180 && region !== "body";
+  const likelySupplierLogo = looksLikeSupplierLogo(image);
 
   if (repeated && region === "header") reasons.push("REPEATED_HEADER_IMAGE");
   if (repeated && region === "footer") reasons.push("REPEATED_FOOTER_IMAGE");
   if (smallBrandingCandidate) reasons.push("POSSIBLE_SOURCE_LOGO");
+  if (likelySupplierLogo) reasons.push("FIRST_PAGE_LOGO");
 
   if (reasons.length > 0) {
-    const confidence = repeated ? 0.84 : 0.58;
+    const confidence = likelySupplierLogo || repeated ? 0.84 : 0.58;
     return { image, decision: confidence >= 0.75 ? "removed" : "uncertain", reasons, confidence };
   }
 
@@ -1057,6 +1068,28 @@ function normalizeText(value: string) {
   return value.toLowerCase().replace(/\s+/g, " ").replace(/[\d]+/g, "#").trim();
 }
 
+function looksLikeSupplierBrandName(value: string) {
+  const text = value.replace(/\s+/g, " ").trim();
+  if (!text || text.length < 3) return false;
+  if (/\b(?:regulator|converter|amplifier|sensor|controller|driver|diode|transistor|memory|processor|module|switch|oscillator|reference|detector|ic|ics|mcu|mosfet|ldo|voltage|current|output|input|temperature)\b/i.test(text)) return false;
+  if (/\b(?:www\.|https?:\/\/|@|\b(?:scan me|qr|barcode)\b)/i.test(text)) return true;
+  const companyWords = /(semiconductor|electronics|technology|devices|systems|solutions|components|industries|microelectronics|integrated|manufacturing|company|corp|ltd|inc|group)/i;
+  const shortName = /^[A-Z0-9&.'-]+(?:\s+[A-Z0-9&.'-]+){1,4}$/; 
+  return companyWords.test(text) && (shortName.test(text) || text.split(/\s+/).length <= 4);
+}
+
+function looksLikeSupplierProductHeader(value: string) {
+  const text = value.replace(/\s+/g, " ").trim();
+  if (!text || text.length < 8) return false;
+  return /(?:[A-Z]{1,8}[0-9][A-Z0-9-]{2,}|\b[A-Z]{1,6}-?[0-9][A-Z0-9-]{2,}\b)/.test(text)
+    && /\b(?:semiconductor|electronics|technology|devices|systems|solutions|components|industries|company|corp|ltd|inc|group)\b/i.test(text);
+}
+
+function looksLikeSupplierLogo(image: NormalizableImage) {
+  const label = `${image.storageKey} ${image.mimeType}`.toLowerCase();
+  return image.width <= 420 && image.height <= 180 && /(logo|brand|semiconductor|electronics|technology|devices|company|corp|ltd|inc)/i.test(label);
+}
+
 function findPage(pages: NormalizablePage[], pageNumber: number) {
   return pages.find((page) => page.pageNumber === pageNumber) ?? pages[0] ?? { pageNumber, width: 595, height: 842, textBlocks: [], images: [], tables: [] };
 }
@@ -1276,7 +1309,7 @@ function shouldMergeWrappedListItem(previous: string, next: string) {
   if (words.length <= 1) return true;
   if (/^[a-z]/.test(next)) return true;
   if (/\b(with|for|to|and|or|of|in|at|by|from|with|without|through|during|including)$/i.test(previous)) return true;
-  if (/[-,\/]$/.test(previous)) return true;
+  if (/[-,/]$/.test(previous)) return true;
   return false;
 }
 

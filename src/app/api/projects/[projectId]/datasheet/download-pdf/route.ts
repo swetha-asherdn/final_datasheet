@@ -21,8 +21,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pro
     const storageKey = hasEditedPdf ? project.editableDocx.storageKey : project.originalPdf.storageKey;
 
     const fileStream = await getPrivateObject(storageKey);
-    
-    return new Response(fileStream as any, {
+
+    return new Response(fileStream.body, {
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `inline; filename="${project.originalPdf.originalFileName}"`

@@ -252,7 +252,7 @@ async function getNormalizedExtraction(ids: { projectObjectId: Types.ObjectId; o
   return { run, normalized: normalizeDatasheetExtraction(pages.map(toNormalizablePage)) };
 }
 
-function applyDocumentPatch(document: any, patch: DatasheetPatch) {
+function applyDocumentPatch(document: Record<string, unknown> & { markModified?: (field: string) => void }, patch: DatasheetPatch) {
   if (patch.title !== undefined) document.title = patch.title;
   if (patch.productCode !== undefined) document.productCode = patch.productCode;
   if (patch.productCategory !== undefined) document.productCategory = patch.productCategory;

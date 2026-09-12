@@ -351,15 +351,39 @@ describe("export renderer", () => {
     expect(blocks.filter((block) => block.kind === "html" && block.role === "figure")).toHaveLength(1);
   });
 
-  it("excludes likely logo or qr images from the export body", () => {
+  it("excludes likely supplier logo or qr images from the export body", () => {
     const blocks = renderTiptapNodesToExportBlocks([
       { type: "image", attrs: { src: "data:image/png;base64,abcd", alt: "Vellore Semicon logo" } },
       { type: "image", attrs: { src: "data:image/png;base64,efgh", alt: "Scan me QR" } },
-      { type: "image", attrs: { src: "data:image/png;base64,ijkl", alt: "Pad location", width: 800, height: 600, imageKey: "pad-location" } },
+      { type: "image", attrs: { src: "data:image/png;base64,ijkl", alt: "ACME Semiconductor logo" } },
+      { type: "image", attrs: { src: "data:image/png;base64,mnop", alt: "Pad location", width: 800, height: 600, imageKey: "pad-location" } },
     ]);
 
     expect(blocks.filter((block) => block.kind === "html")).toHaveLength(1);
     expect(blocks[0] && "html" in blocks[0] ? blocks[0].html : "").toContain("content-image");
+  });
+
+  it("does not keep obvious supplier branding in the exported document body", () => {
+    const html = renderDatasheetExportHtml({
+      template,
+      document: {
+        title: "Low-Dropout Regulators",
+        productCode: template.productCode,
+        productCategory: template.productTitle,
+        editorJson: {
+          type: "doc",
+          content: [
+            { type: "paragraph", content: [{ type: "text", text: "ACME SEMICONDUCTOR" }] },
+            { type: "paragraph", content: [{ type: "text", text: "www.acme-semi.com" }] },
+            { type: "paragraph", content: [{ type: "text", text: "Operating voltage supports industrial temperature ranges." }] },
+          ],
+        },
+      },
+    }, { mode: "pdf" });
+
+    expect(html).not.toContain("ACME SEMICONDUCTOR");
+    expect(html).not.toContain("www.acme-semi.com");
+    expect(html).toContain("Vellore Semicon");
   });
 
   it("honors keep-with-next metadata from editor content", () => {

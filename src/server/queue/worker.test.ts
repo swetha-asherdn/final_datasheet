@@ -51,6 +51,25 @@ describe("Node extraction worker", () => {
     expect(projectUpdateOneMock).toHaveBeenCalledWith({ _id: jobData.projectId }, expect.objectContaining({ $set: expect.objectContaining({ status: "REVIEW_REQUIRED", extractionProgress: 100 }) }));
   });
 
+  it("preserves the review-ready state when a stale job reports progress after completion", async () => {
+    projectFindOneMock.mockResolvedValue({
+      _id: jobData.projectId,
+      ownerId: jobData.ownerId,
+      status: "REVIEW_REQUIRED",
+      latestExtractionRunId: "run1",
+      latestDatasheetDocumentId: "doc1",
+      originalPdf: { storageKey: jobData.storageKey, originalFileName: "sample.pdf", mimeType: "application/pdf", checksum: null, pageCount: null }
+    });
+    callPythonMock.mockResolvedValue({ ...manifest, projectId: jobData.projectId, pages: [] });
+
+    const { processExtractionJob } = await import("@/server/queue/worker");
+    await processExtractionJob(jobData);
+
+    const hasProcessingUpdate = projectUpdateOneMock.mock.calls.some(([, update]) => JSON.stringify(update).includes('"status":"PROCESSING"'));
+    expect(hasProcessingUpdate).toBe(false);
+    expect(projectUpdateOneMock).toHaveBeenCalledWith({ _id: jobData.projectId }, expect.objectContaining({ $set: expect.objectContaining({ status: "REVIEW_REQUIRED" }) }));
+  });
+
   it("marks project and job failed when extraction fails", async () => {
     const { handleExtractionFailure } = await import("@/server/queue/worker");
     await handleExtractionFailure(jobData, new Error("Python worker unavailable"));

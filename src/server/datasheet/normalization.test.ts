@@ -35,6 +35,27 @@ describe("generic datasheet normalization", () => {
     expect(normalized.cleanupReport.reasonCodes).toContain("URL_IN_FOOTER");
   });
 
+  it("classifies repeated supplier company names and supplier URLs as branding cleanup candidates", () => {
+    const pages = [1, 2, 3].map((pageNumber) => basePage(pageNumber, {
+      textBlocks: [
+        { id: `brand-${pageNumber}`, pageNumber, text: "ACME SEMICONDUCTOR", boundingBox: { x: 35, y: 28, width: 180, height: 16 }, fontSize: 10, confidence: 0.92, readingOrderIndex: 0 },
+        { id: `footer-${pageNumber}`, pageNumber, text: "www.acme-semi.com © 2024", boundingBox: { x: 30, y: 805, width: 220, height: 18 }, fontSize: 8, confidence: 0.9, readingOrderIndex: 3 },
+        { id: `title-${pageNumber}`, pageNumber, text: pageNumber === 1 ? "GENERIC POWER REGULATOR" : "Electrical Characteristics", boundingBox: { x: 50, y: pageNumber === 1 ? 120 : 110, width: 360, height: 22 }, fontSize: pageNumber === 1 ? 18 : 15, confidence: 0.92, readingOrderIndex: 1 },
+        { id: `body-${pageNumber}`, pageNumber, text: "Operating voltage supports industrial temperature ranges.", boundingBox: { x: 50, y: 180, width: 420, height: 40 }, fontSize: 10, confidence: 0.93, readingOrderIndex: 2 }
+      ],
+      images: [],
+      tables: []
+    }));
+
+    const normalized = normalizeDatasheetExtraction(pages);
+    const removedText = normalized.cleanupReport.removedTextBlocks.map((item) => item.text);
+
+    expect(removedText).toContain("ACME SEMICONDUCTOR");
+    expect(removedText).toContain("www.acme-semi.com © 2024");
+    expect(normalized.cleanupReport.reasonCodes).toContain("BRAND_COMPANY_NAME");
+    expect(normalized.cleanupReport.reasonCodes).toContain("URL_IN_FOOTER");
+  });
+
   it("splits combined repeated header text into product code and title/category", () => {
     const pages = [1, 2, 3].map((pageNumber) => basePage(pageNumber, {
       textBlocks: [

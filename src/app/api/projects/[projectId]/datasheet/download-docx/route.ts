@@ -1,4 +1,3 @@
-import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { connectToDatabase } from "@/server/db";
 import { ProjectModel } from "@/server/models/project";

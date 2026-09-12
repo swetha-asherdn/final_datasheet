@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { z } from "zod";
 
 const envSchema = z.object({
@@ -12,7 +13,7 @@ const envSchema = z.object({
   S3_FORCE_PATH_STYLE: z.coerce.boolean().default(true),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(25 * 1024 * 1024),
   PYTHON_WORKER_URL: z.string().url().default("http://localhost:8000"),
-  EXTRACTION_TIMEOUT_MS: z.coerce.number().int().positive().default(10 * 60 * 1000),
+  EXTRACTION_TIMEOUT_MS: z.coerce.number().int().positive().default(30 * 60 * 1000),
   OCR_LANGUAGES: z.string().min(1).default("eng")
 });
 

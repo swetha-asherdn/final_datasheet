@@ -8,6 +8,17 @@ import { ExtractionRunModel } from "@/server/models/extraction-run";
 import { callPythonExtractionService, callPythonDocxConversionService, createSafeErrorSummary, persistExtractionManifest } from "@/server/extraction/service";
 
 async function updateProgress(projectId: string, progress: number, status: "QUEUED" | "PROCESSING" | "COMPLETED" | "FAILED") {
+  const projectQuery = await ProjectModel.findOne({ _id: projectId });
+  const project = projectQuery && typeof projectQuery.toObject === "function" ? projectQuery.toObject() : projectQuery;
+  const currentStatus = typeof project?.status === "string" ? project.status : null;
+  const hasCompletedExtraction = Boolean(project?.latestExtractionRunId || project?.latestDatasheetDocumentId);
+  const isStaleProgressUpdate = status === "PROCESSING" && (currentStatus === "REVIEW_REQUIRED" || currentStatus === "COMPLETED" || currentStatus === "EXPORTED" || hasCompletedExtraction);
+
+  if (isStaleProgressUpdate) {
+    await ProcessingJobModel.updateOne({ projectId: new Types.ObjectId(projectId) }, { $set: { status: "COMPLETED", progress: 100, errorSummary: null } });
+    return;
+  }
+
   const projectStatus = status === "COMPLETED" ? "REVIEW_REQUIRED" : status === "FAILED" ? "FAILED" : status;
   await ProcessingJobModel.updateOne({ projectId: new Types.ObjectId(projectId) }, { $set: { status, progress, errorSummary: null } });
   await ProjectModel.updateOne({ _id: projectId }, { $set: { status: projectStatus, extractionProgress: progress, lastError: null } });

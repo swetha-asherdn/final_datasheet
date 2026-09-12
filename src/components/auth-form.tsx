@@ -17,7 +17,24 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError(null); setLoading(true);
     const form = new FormData(event.currentTarget); const email = String(form.get("email")); const password = String(form.get("password"));
-    if (mode === "register") { const response = await fetch("/api/auth/register", { method: "POST", body: form }); if (!response.ok) { const body = (await response.json()) as { error?: string }; setError(body.error ?? "Registration failed"); setLoading(false); return; } }
+    if (mode === "register") {
+      const response = await fetch("/api/auth/register", { method: "POST", body: form });
+      if (!response.ok) {
+        const body = (await response.json()) as unknown;
+        // API error responses are shaped like: { error: { message, code, details? } }
+        let errMsg = "Registration failed";
+        try {
+          const parsed = body as { error?: { message?: string; code?: string; details?: unknown } | string };
+          if (typeof parsed.error === "string") errMsg = parsed.error;
+          else if (parsed.error && typeof parsed.error === "object") errMsg = String(parsed.error.message ?? parsed.error.code ?? JSON.stringify(parsed.error));
+        } catch {
+          errMsg = "Registration failed";
+        }
+        setError(errMsg);
+        setLoading(false);
+        return;
+      }
+    }
     const result = await signIn("credentials", { email, password, redirect: false }); setLoading(false);
     if (result?.error) { setError("Email or password is incorrect"); return; }
     router.push(searchParams.get("callbackUrl") ?? "/dashboard"); router.refresh();
