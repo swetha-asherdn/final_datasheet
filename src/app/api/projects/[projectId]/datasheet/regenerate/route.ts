@@ -9,7 +9,9 @@ export async function POST(_request: Request, { params }: { params: Promise<{ pr
     const { projectId } = await params;
     const user = await requireUser();
     await connectToDatabase();
-    const result = await regenerateDatasheetFromExtraction({ projectId, ownerId: user.id });
+    const body = await _request.json().catch(() => ({}));
+    const force = Boolean(body?.force);
+    const result = await regenerateDatasheetFromExtraction({ projectId, ownerId: user.id, force });
     return NextResponse.json(result);
   } catch (error) {
     return errorResponse(error);

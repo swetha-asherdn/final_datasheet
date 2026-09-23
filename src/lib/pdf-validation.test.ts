@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const getDocumentMock = vi.hoisted(() => vi.fn());
+const pdfDocumentLoadMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/env", () => ({ env: { MAX_UPLOAD_BYTES: 1024 } }));
-vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({ getDocument: getDocumentMock }));
+vi.mock("pdf-lib", () => ({ PDFDocument: { load: pdfDocumentLoadMock } }));
 
 import { AppError } from "@/lib/errors";
 import { validatePdf, validatePdfBasics } from "@/lib/pdf-validation";
@@ -26,36 +26,21 @@ describe("validatePdfBasics", () => {
 
 describe("validatePdf", () => {
   beforeEach(() => {
-    getDocumentMock.mockReset();
+    pdfDocumentLoadMock.mockReset();
   });
 
-  it("returns page count for a valid pdf when PDF.js succeeds", async () => {
-    const destroyMock = vi.fn(async () => undefined);
-    getDocumentMock.mockReturnValue({
-      promise: Promise.resolve({ numPages: 4, destroy: destroyMock })
-    });
+  it("returns page count for a valid pdf when PDF parsing succeeds", async () => {
+    pdfDocumentLoadMock.mockResolvedValue({ getPageCount: () => 4 });
 
     await expect(validatePdf("sample.pdf", "application/pdf", Buffer.from("%PDF-1.7\n"))).resolves.toEqual({
       checksum: expect.any(String),
       pageCount: 4
     });
-    expect(getDocumentMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.any(Uint8Array),
-        disableWorker: true,
-        isEvalSupported: false,
-        useWorkerFetch: false
-      })
-    );
-    expect(destroyMock).toHaveBeenCalled();
+    expect(pdfDocumentLoadMock).toHaveBeenCalledWith(expect.any(Buffer), { ignoreEncryption: true });
   });
 
-  it("returns a null page count when PDF.js parsing fails", async () => {
-    getDocumentMock.mockReturnValue({
-      promise: {
-        then: (_resolve: unknown, reject: (error: Error) => void) => reject(new Error("Invalid PDF structure"))
-      }
-    });
+  it("returns a null page count when PDF parsing fails", async () => {
+    pdfDocumentLoadMock.mockRejectedValue(new Error("Invalid PDF structure"));
 
     await expect(validatePdf("sample.pdf", "application/pdf", Buffer.from("%PDF-1.7\n"))).resolves.toEqual({
       checksum: expect.any(String),

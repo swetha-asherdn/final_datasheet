@@ -18,7 +18,8 @@ export function replaceProductCodeTokens({
   mode: ProductCodeReplacementMode;
 }): ProductCodeReplacementResult {
   const pattern = find.trim();
-  if (!pattern) {
+  const replacement = replaceWith.trim();
+  if (!pattern || !replacement) {
     return { text, replacedCount: 0, warnings: [] };
   }
 
@@ -31,15 +32,22 @@ export function replaceProductCodeTokens({
     };
   }
 
+  const alreadyReplaced = (token: string) => {
+    if (!token) return false;
+    const tokenUpper = token.toUpperCase();
+    const replacementUpper = replacement.toUpperCase();
+    return token === replacement || token.startsWith(replacement) || token.startsWith(replacementUpper) || token.includes(replacement) || token.includes(replacementUpper) || tokenUpper.startsWith(replacementUpper);
+  };
+
   let replacedCount = 0;
   const warnings: string[] = [];
 
   const result = text.replace(/([A-Za-z0-9][A-Za-z0-9-]*)/g, (token) => {
-    if (!isLikelyProductCodeToken(token)) {
+    if (!isLikelyProductCodeToken(token) || alreadyReplaced(token)) {
       return token;
     }
 
-    let replacement: string | null = null;
+    let replacementText: string | null = null;
     switch (mode) {
       case "starts-with":
         if (token.startsWith(pattern)) {
@@ -47,7 +55,7 @@ export function replaceProductCodeTokens({
           if (remainder && !/^[A-Za-z0-9-]+$/.test(remainder)) {
             return token;
           }
-          replacement = replaceWith + remainder;
+          replacementText = replacement + remainder;
         }
         break;
       case "ends-with":
@@ -56,27 +64,30 @@ export function replaceProductCodeTokens({
           if (prefix && !/^[A-Za-z0-9-]+$/.test(prefix)) {
             return token;
           }
-          replacement = prefix + replaceWith;
+          replacementText = prefix + replacement;
         }
         break;
       case "exact":
         if (token === pattern) {
-          replacement = replaceWith;
+          replacementText = replacement;
         }
         break;
       case "contains":
-        if (token.includes(pattern)) {
-          replacement = token.split(pattern).join(replaceWith);
+        if (token.includes(pattern) && token !== pattern) {
+          const next = token.split(pattern).join(replacement);
+          if (next !== token && !next.includes(replacement + replacement)) {
+            replacementText = next;
+          }
         }
         break;
     }
 
-    if (!replacement) {
+    if (!replacementText) {
       return token;
     }
 
     replacedCount += 1;
-    return replacement;
+    return replacementText;
   });
 
   if (replacedCount === 0 && !isLikelyProductCodeFragment(pattern)) {
@@ -86,13 +97,13 @@ export function replaceProductCodeTokens({
   return { text: result, replacedCount, warnings };
 }
 
-function isLikelyProductCodeFragment(value: string) {
+export function isLikelyProductCodeFragment(value: string) {
   const normalized = value.trim();
   if (!normalized || normalized.length < 3) return false;
   return /[A-Za-z]/.test(normalized) && /\d/.test(normalized);
 }
 
-function isLikelyProductCodeToken(value: string) {
+export function isLikelyProductCodeToken(value: string) {
   if (!value || value.length < 4) return false;
   return /^[A-Z0-9-]+$/i.test(value) && /[A-Za-z]/.test(value) && /\d/.test(value) && !/^\d+$/.test(value);
 }

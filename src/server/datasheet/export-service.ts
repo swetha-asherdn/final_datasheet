@@ -10,6 +10,7 @@ import {
   renderExportDocumentHtml,
   type ExportTemplateSnapshot,
 } from "@/server/datasheet/export-renderer";
+import { PDFDocument } from "pdf-lib";
 import { DatasheetDocumentModel } from "@/server/models/datasheet-document";
 import { DatasheetExportModel } from "@/server/models/datasheet-export";
 import { DatasheetTemplateSettingsModel } from "@/server/models/datasheet-template-settings";
@@ -49,12 +50,6 @@ export type RenderedExportLayoutDiagnostics = {
   pages: RenderedPageMeasurement[];
   warnings: string[];
 };
-type PdfJsGetDocument = typeof import("pdfjs-dist/legacy/build/pdf.mjs").getDocument;
-type PdfJsDocumentInit = Parameters<PdfJsGetDocument>[0] & {
-  disableWorker?: boolean;
-  useWorkerFetch?: boolean;
-};
-
 export type SerializedDatasheetExport = {
   id: string;
   projectId: string;
@@ -591,20 +586,8 @@ async function verifyPdfPhysicalPageCount(pdf: Buffer, expectedPages: number) {
 
 async function countPdfPages(pdf: Buffer): Promise<number | null> {
   try {
-    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const documentInit: PdfJsDocumentInit = {
-      data: new Uint8Array(pdf.buffer, pdf.byteOffset, pdf.byteLength),
-      disableWorker: true,
-      isEvalSupported: false,
-      useWorkerFetch: false,
-    };
-    const loadingTask = pdfjs.getDocument(documentInit);
-    const document = await loadingTask.promise;
-    try {
-      return Number.isFinite(document.numPages) ? document.numPages : null;
-    } finally {
-      await document.destroy();
-    }
+    const document = await PDFDocument.load(pdf, { ignoreEncryption: true });
+    return document.getPageCount();
   } catch (error) {
     if (process.env.NODE_ENV === "development") {
       console.error("[datasheet-export] PDF page-count verification unavailable", error);

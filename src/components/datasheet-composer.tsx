@@ -19,14 +19,14 @@ import { EditorContent, useEditor, type JSONContent, type Editor } from "@tiptap
 import StarterKit from "@tiptap/starter-kit";
 import { ArrowDown, ArrowUp, Bold, Bot, Download, ExternalLink, Eye, EyeOff, FileDown, FilePlus2, Heading1, Heading2, ImageIcon, Italic, List, ListOrdered, Maximize2, Plus, RefreshCcw, Save, Sparkles, SplitSquareVertical, SubscriptIcon, SuperscriptIcon, Table2, Trash, UnderlineIcon, X } from "lucide-react";
 import { ExtractionReview } from "@/components/extraction-review";
+import type { ProjectStatus } from "@/lib/project-status";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { replaceProductCodeTokens, type ProductCodeReplacementMode } from "@/lib/product-code-replacement";
-import { applySupplierProductCodeMappings, buildSuggestedSupplierMappings, detectSupplierProductCodesFromEditorJson, type SupplierCodeMapping } from "@/lib/supplier-product-code-mapping";
+import { applySupplierProductCodeMappings, autoApproveSupplierCodeMappings, buildSuggestedSupplierMappings, detectSupplierProductCodesFromEditorJson, type SupplierCodeMapping } from "@/lib/supplier-product-code-mapping";
 
-type ProjectStatus = "DRAFT" | "UPLOADED" | "QUEUED" | "PROCESSING" | "REVIEW_REQUIRED" | "FAILED";
 type ComposerTab = "extraction" | "editor" | "paged-layout" | "paged-preview" | "template" | "cleanup" | "export";
 type CleanupFilter = "all" | "removed-text" | "removed-images" | "uncertain" | "restored";
 type CleanupItem = { id: string; itemType: "text" | "image"; pageNumber: number; text?: string; storageKey?: string; confidence: number; reasons: string[]; decision: string };
@@ -368,7 +368,9 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
   async function saveDocument(input: Partial<DatasheetDocument>) {
     setSaveState("saving");
     setSaveError(null);
-    const response = await fetch(`/api/projects/${projectId}/datasheet`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
+    const safeInput = input.editorJson ? { ...input, editorJson: sanitizeEditorJsonForSave(input.editorJson as JSONContent) } : input;
+    console.info("[DatasheetComposer] PATCH payload", JSON.stringify(safeInput, null, 2));
+    const response = await fetch(`/api/projects/${projectId}/datasheet`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(safeInput) });
     if (!response.ok) {
       const errorMessage = await safeErrorMessage(response, "Datasheet could not be saved.");
       if (process.env.NODE_ENV === "development") console.warn("Datasheet save failed", { status: response.status, message: errorMessage });
@@ -568,6 +570,7 @@ function DatasheetEditor({ projectId, bundle, saveState, saveError, onDirtyChang
   const [editorDoc, setEditorDoc] = useState<JSONContent>(ensureEditorJsonHasBlockIds(bundle.document.editorJson));
   const [selectionVersion, setSelectionVersion] = useState(0);
   const autosaveTimerRef = useRef<number | null>(null);
+  const saveInFlightRef = useRef(false);
   const [templateDraft, setTemplateDraft] = useState({
     layoutMode: bundle.template.layoutMode,
     layoutDensity: bundle.template.layoutDensity,
@@ -756,18 +759,25 @@ function DatasheetEditor({ projectId, bundle, saveState, saveError, onDirtyChang
   useEffect(() => {
     if (!dirty || !editor) return;
     if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
-    autosaveTimerRef.current = window.setTimeout(() => {
-      void onSave({ title, productCode, productCategory, editorJson: ensureEditorJsonHasBlockIds(editor.getJSON()), status: "EDITING" }).then((saved) => {
+      autosaveTimerRef.current = window.setTimeout(() => {
+      if (!editor) return;
+      if (saveInFlightRef.current) return; // avoid overlapping saves
+      saveInFlightRef.current = true;
+      const currentJson = ensureEditorJsonHasBlockIds(editor.getJSON());
+      void onSave({ title, productCode, productCategory, editorJson: currentJson, status: "EDITING" }).then((saved) => {
         if (saved) {
+          setEditorDoc(currentJson);
           setDirty(false);
           setPreviewVersion((v) => v + 1); // Refresh preview iframe
         }
+      }).finally(() => {
+        saveInFlightRef.current = false;
       });
-    }, 1600);
+    }, 3000);
     return () => {
       if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
     };
-  }, [dirty, editor, onSave, productCategory, productCode, title]);
+  }, [dirty, editor, editorDoc, onSave, productCategory, productCode, title]);
 
   function updateMetadata(setter: (value: string) => void, value: string) {
     setter(value);
@@ -778,18 +788,31 @@ function DatasheetEditor({ projectId, bundle, saveState, saveError, onDirtyChang
   async function saveNow() {
     if (!editor) return;
     if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
-    const saved = await onSave({ title, productCode, productCategory, editorJson: ensureEditorJsonHasBlockIds(editor.getJSON()), status: "EDITING" });
-    if (saved) {
-      setDirty(false);
-      onDirtyChange(false);
-      setPreviewVersion((v) => v + 1); // Refresh preview iframe
+    if (saveInFlightRef.current) {
+      // Wait for inflight save to finish, max-wait small
+      while (saveInFlightRef.current) await new Promise((r) => setTimeout(r, 50));
+    }
+    const currentJson = ensureEditorJsonHasBlockIds(editor.getJSON());
+    setEditorDoc(currentJson);
+    saveInFlightRef.current = true;
+    try {
+      const saved = await onSave({ title, productCode, productCategory, editorJson: currentJson, status: "EDITING" });
+      if (saved) {
+        setDirty(false);
+        onDirtyChange(false);
+        setEditorDoc(currentJson);
+        setPreviewVersion((v) => v + 1); // Refresh preview iframe
+      }
+    } finally {
+      saveInFlightRef.current = false;
     }
   }
 
-  function markEditorDirty() {
+  function markEditorDirty(nextJson?: JSONContent) {
+    const normalized = ensureEditorJsonHasBlockIds(nextJson ?? editor?.getJSON() ?? editorDoc);
+    setEditorDoc(normalized);
     setDirty(true);
     onDirtyChange(true);
-    if (editor) setEditorDoc(ensureEditorJsonHasBlockIds(editor.getJSON()));
   }
 
   const previewSrc = "/api/projects/" + projectId + "/datasheet/export/preview?v=" + previewVersion + "&saved=" + encodeURIComponent(bundle.document.lastSavedAt) + "&mode=auto";
@@ -824,7 +847,19 @@ function DatasheetEditor({ projectId, bundle, saveState, saveError, onDirtyChang
         <CardContent className="space-y-3">
           <EditorToolbar projectId={projectId} editor={editor} selectedBlock={selectedBlock} onMutate={markEditorDirty} onOpenPagedLayout={onOpenPagedLayout} />
           <CodeReplacePanel editor={editor} onMutate={markEditorDirty} />
-          <SupplierCodeMappingPanel editor={editor} editorDoc={editorDoc} onMutate={markEditorDirty} />
+          <SupplierCodeMappingPanel
+            editor={editor}
+            editorDoc={editorDoc}
+            onMutate={markEditorDirty}
+            productCode={productCode}
+            onPreviewRefresh={() => setPreviewVersion((v) => v + 1)}
+            onUpdateProductCode={async (nextProductCode: string) => {
+              setProductCode(nextProductCode);
+              await onSave({ title, productCode: nextProductCode, productCategory, editorJson: ensureEditorJsonHasBlockIds(editor?.getJSON() ?? editorDoc), status: "EDITING" });
+              await onTemplateSave({ productCode: nextProductCode } as any);
+              setPreviewVersion((v) => v + 1);
+            }}
+          />
           <div className="flex flex-wrap items-center gap-3 rounded-md border bg-slate-50 px-3 py-2 text-xs">
             <span className="font-semibold text-slate-700">Layout:</span>
             <div className="flex gap-1">
@@ -1173,7 +1208,7 @@ function replaceSupplierCodeMappingsInJsonContent(node: JSONContent, mappings: S
   }
 
   let totalCount = 0;
-  const warnings: string[] = [];
+  const warningsSet = new Set<string>();
 
   if (node.type === "text" && typeof node.text === "string") {
     const result = applySupplierProductCodeMappings({
@@ -1183,15 +1218,15 @@ function replaceSupplierCodeMappingsInJsonContent(node: JSONContent, mappings: S
 
     if (result.replacedCount > 0) {
       totalCount += result.replacedCount;
-      warnings.push(...result.warnings);
-      return { node: { ...node, text: result.text }, count: result.replacedCount, warnings: result.warnings };
+      for (const w of result.warnings) warningsSet.add(w);
+      return { node: { ...node, text: result.text }, count: result.replacedCount, warnings: Array.from(warningsSet) };
     }
 
     if (result.warnings.length > 0) {
-      warnings.push(...result.warnings);
+      for (const w of result.warnings) warningsSet.add(w);
     }
 
-    return { node, count: 0, warnings: result.warnings };
+    return { node, count: 0, warnings: Array.from(warningsSet) };
   }
 
   if (Array.isArray(node.content)) {
@@ -1199,18 +1234,18 @@ function replaceSupplierCodeMappingsInJsonContent(node: JSONContent, mappings: S
     const newContent = node.content.map((child) => {
       const result = replaceSupplierCodeMappingsInJsonContent(child, confirmedMappings);
       count += result.count;
-      warnings.push(...result.warnings);
+      for (const w of result.warnings) warningsSet.add(w);
       return result.node;
     });
 
     return {
       node: count > 0 ? { ...node, content: newContent } : node,
       count,
-      warnings,
+      warnings: Array.from(warningsSet),
     };
   }
 
-  return { node, count: totalCount, warnings };
+  return { node, count: totalCount, warnings: Array.from(warningsSet) };
 }
 
 function replaceInJsonContent(node: JSONContent, pattern: string, replacement: string, mode: CodeMatchMode): { node: JSONContent; count: number; warnings: string[] } {
@@ -1252,7 +1287,7 @@ function replaceInJsonContent(node: JSONContent, pattern: string, replacement: s
   return { node, count, warnings };
 }
 
-function CodeReplacePanel({ editor, onMutate }: { editor: Editor | null; onMutate: () => void }) {
+function CodeReplacePanel({ editor, onMutate }: { editor: Editor | null; onMutate: (nextJson?: JSONContent) => void }) {
   const [find, setFind] = useState("");
   const [replaceTo, setReplaceTo] = useState("");
   const [mode, setMode] = useState<CodeMatchMode>("starts-with");
@@ -1267,7 +1302,7 @@ function CodeReplacePanel({ editor, onMutate }: { editor: Editor | null; onMutat
     const { node: newJson, count, warnings } = replaceInJsonContent(currentJson, pattern, replacement, mode);
     if (count > 0) {
       editor.commands.setContent(newJson, { emitUpdate: false });
-      onMutate();
+      onMutate(newJson);
     }
     setLastResult({ count, find: pattern, warning: warnings[0] ?? null });
   }
@@ -1357,10 +1392,11 @@ function CodeReplacePanel({ editor, onMutate }: { editor: Editor | null; onMutat
   );
 }
 
-function SupplierCodeMappingPanel({ editor, editorDoc, onMutate }: { editor: Editor | null; editorDoc: JSONContent; onMutate: () => void }) {
+function SupplierCodeMappingPanel({ editor, editorDoc, onMutate, productCode, onPreviewRefresh, onUpdateProductCode }: { editor: Editor | null; editorDoc: JSONContent; onMutate: (nextJson?: JSONContent) => void; productCode: string; onPreviewRefresh?: () => void; onUpdateProductCode: (nextProductCode: string) => Promise<void> | void }) {
   const [mappings, setMappings] = useState<SupplierCodeMapping[]>([]);
   const [result, setResult] = useState<{ count: number; warnings: string[]; message: string } | null>(null);
   const [open, setOpen] = useState(false);
+  const [autoApprove, setAutoApprove] = useState(false);
 
   useEffect(() => {
     if (!editorDoc) {
@@ -1368,28 +1404,106 @@ function SupplierCodeMappingPanel({ editor, editorDoc, onMutate }: { editor: Edi
       return;
     }
 
+    const currentText = extractPlainTextFromJson(editorDoc);
     const detected = buildSuggestedSupplierMappings(detectSupplierProductCodesFromEditorJson(editorDoc));
-    setMappings(detected.map((mapping) => ({ ...mapping, status: "pending" })));
+    const nextMappings = detected.map((mapping) => {
+      const stillPresent = isTextContainingSupplierCode(currentText, mapping.supplierCode);
+      return {
+        ...mapping,
+        status: stillPresent ? "pending" : "applied",
+      };
+    });
+    setMappings(nextMappings);
   }, [editorDoc]);
+
+  useEffect(() => {
+    if (!autoApprove || !editor || mappings.length === 0) return;
+    const nextMappings = autoApproveSupplierCodeMappings(mappings, 0.8);
+    if (JSON.stringify(nextMappings.map((m) => ({ id: m.id, status: m.status }))) !== JSON.stringify(mappings.map((m) => ({ id: m.id, status: m.status })))) {
+      setMappings(nextMappings);
+    }
+  }, [autoApprove, editor, mappings]);
 
   function updateMapping(id: string, next: Partial<SupplierCodeMapping>) {
     setMappings((current) => current.map((item) => (item.id === id ? { ...item, ...next } : item)));
   }
 
-  function applyConfirmedMappings() {
+  function extractPlainTextFromJson(node: JSONContent | unknown): string {
+    if (!node || typeof node !== "object") return "";
+    const record = node as Record<string, unknown>;
+    const parts: string[] = [];
+
+    if (typeof record.text === "string") {
+      parts.push(record.text);
+    }
+
+    if (Array.isArray(record.content)) {
+      for (const child of record.content) {
+        parts.push(extractPlainTextFromJson(child));
+      }
+    }
+
+    return parts.join(" ");
+  }
+
+  function isTextContainingSupplierCode(text: string, supplierCode: string) {
+    if (!text || !supplierCode) return false;
+    const trimmed = supplierCode.trim();
+    if (!trimmed) return false;
+    const normalizedText = text.replace(/\s+/g, " ");
+    const normalizedCode = trimmed.replace(/\s+/g, "");
+    return normalizedText.includes(normalizedCode) || normalizedText.includes(normalizedCode.replace(/-/g, ""));
+  }
+
+  function applyConfirmedMappings({ updateHeader = false }: { updateHeader?: boolean } = {}) {
     if (!editor || mappings.length === 0) return;
 
-    const confirmed = mappings.filter((mapping) => mapping.status === "confirmed");
+    const currentJson = editor.getJSON() as JSONContent;
+    const currentText = extractPlainTextFromJson(currentJson);
+    const staleIds = new Set<string>();
+    const confirmed = mappings.filter((mapping) => {
+      const isConfirmed = mapping.status === "confirmed";
+      const stillPresent = isTextContainingSupplierCode(currentText, mapping.supplierCode);
+      if (isConfirmed && !stillPresent) {
+        staleIds.add(mapping.id);
+      }
+      return isConfirmed && stillPresent;
+    });
+
+    if (staleIds.size > 0) {
+      setMappings((current) => current.map((mapping) => staleIds.has(mapping.id) ? { ...mapping, status: "applied" } : mapping));
+    }
+
     if (confirmed.length === 0) {
-      setResult({ count: 0, warnings: [], message: "No confirmed supplier-code mappings selected yet. Review the list and mark each row as confirmed before applying." });
+      setResult({
+        count: 0,
+        warnings: [],
+        message: staleIds.size > 0
+          ? "These supplier-code mappings were already applied or are no longer present in the current editor document."
+          : "No confirmed supplier-code mappings selected yet. Review the list and mark each row as confirmed before applying.",
+      });
       return;
     }
 
-    const currentJson = editor.getJSON() as JSONContent;
     const { node: newJson, count, warnings } = replaceSupplierCodeMappingsInJsonContent(currentJson, confirmed);
     if (count > 0) {
       editor.commands.setContent(newJson, { emitUpdate: false });
-      onMutate();
+      onMutate(newJson);
+      if (onPreviewRefresh) {
+        onPreviewRefresh();
+      }
+
+      if (updateHeader) {
+        const headerValue = confirmed
+          .map((mapping) => mapping.velloreCode)
+          .filter(Boolean)
+          .join(" / ");
+        if (headerValue && productCode && productCode !== headerValue) {
+          void onUpdateProductCode(headerValue);
+        }
+      }
+
+      setMappings((current) => current.map((mapping) => confirmed.some((confirmedMapping) => confirmedMapping.id === mapping.id) ? { ...mapping, status: "applied" } : mapping));
       setResult({ count, warnings, message: `Applied ${count} safe replacement${count === 1 ? "" : "s"} across ${confirmed.length} confirmed supplier-code mapping${confirmed.length === 1 ? "" : "s"}.` });
       return;
     }
@@ -1401,6 +1515,14 @@ function SupplierCodeMappingPanel({ editor, editorDoc, onMutate }: { editor: Edi
     });
   }
 
+  useEffect(() => {
+    if (!autoApprove || !editor || mappings.length === 0) return;
+    const toApply = mappings.filter((mapping) => mapping.status === "confirmed");
+    if (toApply.length > 0) {
+      applyConfirmedMappings({ updateHeader: true });
+    }
+  }, [autoApprove, editor, mappings]);
+
   return (
     <details className="rounded-md border border-violet-200 bg-violet-50/70 text-xs" open={open} onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
       <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-2 font-semibold text-violet-800 hover:bg-violet-100/70 transition rounded-md">
@@ -1408,13 +1530,26 @@ function SupplierCodeMappingPanel({ editor, editorDoc, onMutate }: { editor: Edi
         <span className="ml-auto text-[10px] font-normal text-violet-600">{open ? "▲ collapse" : "▼ expand"}</span>
       </summary>
       <div className="space-y-3 px-4 pb-4 pt-2">
+        <div className="flex items-center justify-between gap-2 rounded-md border border-violet-200 bg-white/60 p-2">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-violet-700">Auto approval</p>
+            <p className="text-[10px] text-violet-600">When enabled, high-confidence mappings auto-confirm and apply automatically.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAutoApprove((current) => !current)}
+            className={`inline-flex items-center rounded-full border px-2 py-1 text-[10px] font-medium transition ${autoApprove ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white text-slate-600"}`}
+          >
+            {autoApprove ? "ON" : "OFF"}
+          </button>
+        </div>
         <p className="text-[11px] text-violet-700 leading-snug">Review likely supplier product codes detected in the editor, edit the Vellore replacement code if needed, and confirm each mapping before applying exact safe replacements.</p>
         {mappings.length === 0 ? (
           <p className="rounded-md border border-dashed border-violet-200 bg-white/60 p-2 text-[11px] text-violet-700">No likely supplier-product-code matches were detected in the current editor content.</p>
         ) : (
           <div className="space-y-2">
-            {mappings.map((mapping) => (
-              <div key={mapping.id} className="rounded-md border border-violet-200 bg-white p-2 shadow-sm">
+            {mappings.map((mapping, _idx) => (
+              <div key={`${mapping.id}-${_idx}`} className="rounded-md border border-violet-200 bg-white p-2 shadow-sm">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-[11px] font-medium text-slate-700">
                     <span className="rounded bg-violet-100 px-1.5 py-0.5 text-violet-700">{mapping.pageNumber}</span>
@@ -1462,7 +1597,7 @@ function SupplierCodeMappingPanel({ editor, editorDoc, onMutate }: { editor: Edi
         {mappings.length > 0 ? (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-violet-200 bg-white p-2">
             <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Ready to apply</span>
-            <Button type="button" size="sm" className="bg-violet-600 hover:bg-violet-700 text-white" onClick={applyConfirmedMappings} disabled={!editor || mappings.every((mapping) => mapping.status !== "confirmed")}>
+            <Button type="button" size="sm" className="bg-violet-600 hover:bg-violet-700 text-white" onClick={() => { applyConfirmedMappings({ updateHeader: true }); }} disabled={!editor || mappings.every((mapping) => mapping.status !== "confirmed")}>
               Apply confirmed mappings
             </Button>
           </div>
@@ -1472,7 +1607,7 @@ function SupplierCodeMappingPanel({ editor, editorDoc, onMutate }: { editor: Edi
             <p className={`text-[11px] font-medium ${result.count > 0 ? "text-emerald-700" : "text-violet-700"}`}>{result.message}</p>
             {result.warnings.length > 0 ? (
               <ul className="mt-2 list-disc pl-4 text-[10px] text-amber-700">
-                {result.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+                {result.warnings.map((warning, i) => <li key={`warning-${i}`}>{warning}</li>)}
               </ul>
             ) : null}
           </div>
@@ -1704,24 +1839,77 @@ function SectionNavigatorPanel({ editor, sections, onMutate }: { editor: Editor 
   );
 }
 
+function sanitizeEditorJsonForSave(value: JSONContent): JSONContent {
+  function normalizeAttrs(attrs: unknown): Record<string, unknown> | undefined {
+    if (!isObjectRecord(attrs)) return undefined;
+    const nextAttrs = Object.fromEntries(Object.entries(attrs).filter(([, childValue]) => childValue !== null && childValue !== undefined));
+    return Object.keys(nextAttrs).length ? nextAttrs : undefined;
+  }
+
+  function normalizeMark(mark: unknown): Record<string, unknown> | undefined {
+    if (!isObjectRecord(mark)) return undefined;
+    const attrs = normalizeAttrs(mark.attrs);
+    const { attrs: _ignoredAttrs, ...rest } = mark as Record<string, unknown> & { attrs?: unknown };
+    return Object.keys(rest).length || attrs ? { ...rest, ...(attrs ? { attrs } : {}) } : undefined;
+  }
+
+  function visit(node: JSONContent | undefined): JSONContent | undefined {
+    if (!node || typeof node !== "object") return node;
+    const { attrs: _ignoredAttrs, ...nodeWithoutAttrs } = node as JSONContent & { attrs?: unknown };
+    const content = Array.isArray(node.content) ? node.content.map((child) => visit(child)).filter((child): child is JSONContent => Boolean(child)) : node.content;
+    const attrs = normalizeAttrs(node.attrs);
+    const marks = Array.isArray(node.marks)
+      ? node.marks.map((mark) => normalizeMark(mark)).filter((mark): mark is Record<string, unknown> => Boolean(mark))
+      : node.marks;
+
+    const nextNode = { ...nodeWithoutAttrs, ...(attrs ? { attrs } : {}), ...(content ? { content } : {}), ...(marks && marks.length ? { marks } : {}) };
+
+    if (!node.type || node.type === "text" || node.type === "doc" || node.type === "listItem") {
+      return nextNode as JSONContent;
+    }
+
+    return nextNode as JSONContent;
+  }
+
+  const rootContent = Array.isArray(value.content) ? value.content.map((child) => visit(child)).filter((child): child is JSONContent => Boolean(child)) : value.content;
+  const { attrs: _ignoredRootAttrs, ...valueWithoutAttrs } = value as JSONContent & { attrs?: unknown };
+  const rootAttrs = normalizeAttrs(value.attrs);
+  return { ...valueWithoutAttrs, ...(rootAttrs ? { attrs: rootAttrs } : {}), ...(rootContent ? { content: rootContent } : {}) } as JSONContent;
+}
+
 function ensureEditorJsonHasBlockIds(value: JSONContent): JSONContent {
   let counter = 0;
+
+  function normalizeAttrs(attrs: unknown): Record<string, unknown> | undefined {
+    if (!isObjectRecord(attrs)) return undefined;
+    const nextAttrs = Object.fromEntries(Object.entries(attrs).filter(([, childValue]) => childValue !== null && childValue !== undefined));
+    return Object.keys(nextAttrs).length ? nextAttrs : undefined;
+  }
+
   function visit(node: JSONContent | undefined, topLevel = false): JSONContent | undefined {
     if (!node || typeof node !== "object") return node;
+    const { attrs: _ignoredAttrs, ...nodeWithoutAttrs } = node as JSONContent & { attrs?: unknown };
     const content = Array.isArray(node.content) ? node.content.map((child) => visit(child, false)).filter((child): child is JSONContent => Boolean(child)) : node.content;
+    const attrs = normalizeAttrs(node.attrs);
     if (!node.type || node.type === "text" || node.type === "doc" || node.type === "listItem") {
-      return { ...node, ...(content ? { content } : {}) };
+      return { ...nodeWithoutAttrs, ...(attrs ? { attrs } : {}), ...(content ? { content } : {}) };
     }
+
     const shouldTrack = topLevel || layoutMetadataNodeTypes.includes(node.type);
-    const attrs = { ...(isObjectRecord(node.attrs) ? node.attrs : {}) } as Record<string, unknown>;
-    if (shouldTrack && !attrs.blockId && node.type !== "pageBreak") {
+    const hasOriginalAttrs = isObjectRecord(node.attrs);
+    const nextAttrs = { ...(attrs ?? {}) } as Record<string, unknown>;
+    // Only synthesize layout metadata (like blockId) when the node originally had an attrs object.
+    if (shouldTrack && hasOriginalAttrs && !nextAttrs.blockId && node.type !== "pageBreak") {
       counter += 1;
-      attrs.blockId = `block-${counter}`;
+      nextAttrs.blockId = `block-${counter}`;
     }
-    return { ...node, attrs: Object.keys(attrs).length ? attrs : node.attrs, ...(content ? { content } : {}) };
+    return { ...nodeWithoutAttrs, ...(Object.keys(nextAttrs).length ? { attrs: nextAttrs } : {}), ...(content ? { content } : {}) };
   }
+
   const rootContent = Array.isArray(value.content) ? value.content.map((child) => visit(child, true)).filter((child): child is JSONContent => Boolean(child)) : value.content;
-  return { ...value, content: rootContent };
+  const { attrs: _ignoredRootAttrs, ...valueWithoutAttrs } = value as JSONContent & { attrs?: unknown };
+  const rootAttrs = normalizeAttrs(value.attrs);
+  return { ...valueWithoutAttrs, ...(rootAttrs ? { attrs: rootAttrs } : {}), content: rootContent };
 }
 
 function extractSectionsFromEditorJson(value: JSONContent) {

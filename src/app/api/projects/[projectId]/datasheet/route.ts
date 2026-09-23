@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { ZodError } from "zod";
 import { errorResponse } from "@/lib/errors";
 import { requireUser } from "@/server/auth/session";
 import { connectToDatabase } from "@/server/db";
@@ -22,10 +23,22 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ pr
     const { projectId } = await params;
     const user = await requireUser();
     const input = await request.json();
+    console.info("[/api/projects/[projectId]/datasheet] PATCH input", JSON.stringify(input, null, 2));
     await connectToDatabase();
     const result = await updateDatasheetForProject({ projectId, ownerId: user.id, input });
     return NextResponse.json(result);
   } catch (error) {
+    if (error instanceof ZodError) {
+      console.error("[/api/projects/[projectId]/datasheet] Zod validation failed", JSON.stringify({
+        issues: error.issues.map((issue) => ({
+          path: issue.path,
+          code: issue.code,
+          expected: issue.expected,
+          received: issue.received,
+          message: issue.message
+        }))
+      }, null, 2));
+    }
     return errorResponse(error);
   }
 }

@@ -302,12 +302,15 @@ export function convertToTiptapJson(pages: NormalizablePage[], removedTextIds: S
 
   for (const page of [...pages].sort((a, b) => a.pageNumber - b.pageNumber)) {
     const tableSuppressedTextIds = collectSuppressedTableTextIds(page);
-    const captionSelections = pairFigureCaptions(page.textBlocks, page.images.filter((item) => !removedImageIds.has(item.id) && isBodyRegion(page, item.boundingBox)));
+    const captionSelections = pairFigureCaptions(page.textBlocks, page.images.filter((item) => isBodyRegion(page, item.boundingBox)));
     const captionTextIds = new Set(captionSelections.map((item) => item.block.id));
     const textBlocks = orderTextBlocksForPage(page)
-      .filter((block) => !removedTextIds.has(block.id) && !tableSuppressedTextIds.has(block.id) && !captionTextIds.has(block.id));
+      .filter((block) => !tableSuppressedTextIds.has(block.id) && !captionTextIds.has(block.id));
+    // mark cleanup decision on blocks so editor can show removed/uncertain items without losing content
+    for (const b of textBlocks) (b as any).cleanupDecision = removedTextIds.has(b.id) ? "removed" : "kept";
     const tables = [...page.tables].sort(compareTables);
-    const images = page.images.filter((item) => !removedImageIds.has(item.id) && isBodyRegion(page, item.boundingBox));
+    const images = page.images.filter((item) => isBodyRegion(page, item.boundingBox));
+    for (const img of images) (img as any).cleanupDecision = removedImageIds.has(img.id) ? "removed" : "kept";
     const items = mergeOrderedPageItems(page, textBlocks, tables, images, captionSelections);
 
     for (const item of items) {
@@ -354,12 +357,17 @@ function appendTextBlock(content: Array<Record<string, unknown>>, block: Normali
   }
 
   const normalizedBlock = { ...block, text: normalizedText };
+  const isRemoved = (block as any).cleanupDecision === "removed";
   if (isLikelyHeading(normalizedBlock)) {
-    content.push(createHeadingNode(normalizedText, headingLevel(normalizedBlock)));
+    const node = createHeadingNode(normalizedText, headingLevel(normalizedBlock));
+    if (isRemoved) node.attrs = { ...(node.attrs as Record<string, unknown> | undefined), class: "extracted-removed", sourceId: block.id };
+    content.push(node);
     return;
   }
 
-  content.push({ type: "paragraph", content: [{ type: "text", text: normalizedText }] });
+  const paraNode: Record<string, unknown> = { type: "paragraph", content: [{ type: "text", text: normalizedText }] };
+  if (isRemoved) paraNode.attrs = { class: "extracted-removed", sourceId: block.id };
+  content.push(paraNode);
 }
 
 function appendTable(content: Array<Record<string, unknown>>, table: NormalizableTable) {
@@ -773,9 +781,16 @@ function isRevisionText(value: string) {
 }
 
 function normalizeProductCode(value: string) {
-  const text = value.toUpperCase().replace(/[,_]/g, " ").replace(/\s+/g, " ").trim();
-  const matches = Array.from(text.matchAll(/[A-Z]{1,8}\d[A-Z0-9-]{2,}/g)).map((match) => match[0]);
-  if (matches.length > 0) return Array.from(new Set(matches)).join(" / ");
+  const text = String(value ?? "").toUpperCase().replace(/[,_]/g, " ").replace(/\s+/g, " ").trim();
+  // Prefer strict pattern matches first — allow any Unicode letters so non-ASCII
+  // product codes (e.g. leading Cyrillic) are preserved.
+  const strictMatches = Array.from(text.matchAll(/\p{L}{1,8}\d[\p{L}0-9-]{2,}/gu)).map((m) => m[0]);
+  if (strictMatches.length > 0) return Array.from(new Set(strictMatches)).join(" / ");
+
+  // Fallback: collect tokens that contain both letters and digits (allow slashes and hyphens)
+  const tokens = text.split(/[^\p{L}0-9\/ -]+/gu).map((t) => t.trim()).filter(Boolean);
+  const candidates = tokens.filter((t) => /\p{L}/u.test(t) && /\d/.test(t) && t.length >= 3);
+  if (candidates.length > 0) return Array.from(new Set(candidates)).join(" / ");
   return "";
 }
 
@@ -784,15 +799,67 @@ function collectSuppressedTableTextIds(page: NormalizablePage) {
   for (const table of page.tables) {
     const tableBox = table.boundingBox;
     if (!tableBox) continue;
+    // Build cell-level geometry if possible (approximate equal row/column division)
+    const rows = table.rows ?? [];
+    const rowCount = Math.max(1, rows.length);
+    const colCount = Math.max(1, Math.max(...rows.map((r) => r.length)));
+    const cellWidth = tableBox.width / colCount;
+    const cellHeight = tableBox.height / rowCount;
+    const pageArea = page.width * page.height;
+    const tableAreaRatio = (tableBox.width * tableBox.height) / pageArea;
+
     for (const block of page.textBlocks) {
-      if (!overlaps(block.boundingBox, tableBox, 0.18)) continue;
+      // quick reject if no bbox overlap at all
+      if (!rectsIntersect(block.boundingBox, tableBox)) continue;
+
       const headingAboveTable = isLikelyHeading(block)
         && block.boundingBox.y + block.boundingBox.height <= tableBox.y + Math.max(14, tableBox.height * 0.12);
       if (isSectionHeading(block.text) || headingAboveTable) continue;
-      ids.add(block.id);
+
+      // If the extracted table covers most of the page, don't let its aggregate bbox
+      // suppress nearby headings/paragraphs unless the block clearly sits inside a
+      // specific approximated table cell (strong evidence).
+      let suppress = false;
+
+      // Check overlap with any approximated cell box
+      for (let r = 0; r < rowCount && !suppress; r += 1) {
+        for (let c = 0; c < colCount && !suppress; c += 1) {
+          const cellBox = {
+            x: tableBox.x + c * cellWidth,
+            y: tableBox.y + r * cellHeight,
+            width: cellWidth,
+            height: cellHeight,
+          } as BoundingBox;
+
+          // If block substantially overlaps a cell, it's likely table text
+          if (overlapRatio(block.boundingBox, cellBox) >= 0.45) {
+            suppress = true;
+            break;
+          }
+        }
+      }
+
+      // If table is small (not near full-page) allow aggregate bbox suppression
+      if (!suppress) {
+        if (tableAreaRatio <= 0.7 && overlaps(block.boundingBox, tableBox, 0.12)) suppress = true;
+      }
+
+      if (suppress) ids.add(block.id);
     }
   }
   return ids;
+}
+
+function rectsIntersect(a: BoundingBox, b: BoundingBox) {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+function overlapRatio(a: BoundingBox, b: BoundingBox) {
+  const xOverlap = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x));
+  const yOverlap = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
+  const overlapArea = xOverlap * yOverlap;
+  const aArea = Math.max(1, a.width * a.height);
+  return overlapArea / aArea;
 }
 
 function mergeOrderedPageItems(page: NormalizablePage, textBlocks: NormalizableTextBlock[], tables: NormalizableTable[], images: NormalizableImage[] = [], captions: Array<{ imageId: string; text: string; block: NormalizableTextBlock }> = []) {
@@ -1138,14 +1205,38 @@ function splitBulletItems(value: string) {
 
 function isLikelyHeading(block: NormalizableTextBlock) {
   const text = normalizeTechnicalText(block.text.trim());
-  if (!text || text.length > 100) return false;
+  if (!text || text.length > 120) return false;
   if (isSectionHeading(text)) return true;
   if (isNoteText(text)) return false;
-  const alpha = text.replace(/[^A-Za-z]/g, "");
-  const uppercaseRatio = alpha.length ? alpha.replace(/[^A-Z]/g, "").length / alpha.length : 0;
-  const wordCount = text.split(/\s+/).length;
+
+  // Word/letter heuristics should be Unicode-aware. Use Unicode letter classes
+  // to compute an uppercase ratio where applicable. For scripts without case
+  // we rely more on geometry (fontSize, boldness, and standalone short text)
+  // to avoid misclassifying body text.
+  const letters = text.match(/\p{L}/gu) ?? [];
+  const uppercaseLetters = text.match(/\p{Lu}/gu) ?? [];
+  const uppercaseRatio = letters.length ? uppercaseLetters.length / letters.length : 0;
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
   const standalone = block.boundingBox.width <= 420 || wordCount <= 8;
-  return block.type === "heading" || (standalone && uppercaseRatio > 0.72) || (standalone && (block.fontSize ?? 0) >= 14) || /bold|semibold/i.test(block.fontWeight ?? "");
+
+  const isBoldLike = /bold|semibold|700|800|900/i.test(String(block.fontWeight ?? ""));
+  const largeFont = (block.fontSize ?? 0) >= 12;
+
+  // Heuristics:
+  // - explicit heading nodes are headings
+  // - short, visually standalone lines that are uppercase (for cased scripts)
+  //   or bold/large font are headings
+  // - for scripts without case, prefer font/geometry evidence
+  const casedScriptEvidence = letters.length > 0 && uppercaseRatio > 0.72 && standalone && wordCount <= 8;
+  const uncasedScriptEvidence = letters.length > 0 && uppercaseLetters.length === 0 && (largeFont || isBoldLike) && standalone && wordCount <= 8;
+
+  return (
+    block.type === "heading" ||
+    casedScriptEvidence ||
+    uncasedScriptEvidence ||
+    (standalone && largeFont) ||
+    isBoldLike
+  );
 }
 
 function isSectionHeading(value: string) {
@@ -1153,47 +1244,58 @@ function isSectionHeading(value: string) {
 }
 
 function reorderKnownSections(nodes: Array<Record<string, unknown>>) {
-  const preamble: Array<Record<string, unknown>> = [];
-  const sections: Array<{ heading: string; nodes: Array<Record<string, unknown>> }> = [];
-  let currentSection: { heading: string; nodes: Array<Record<string, unknown>> } | null = null;
-
-  for (const node of nodes) {
-    const heading = sectionHeadingForNode(node);
-    if (heading) {
-      if (currentSection) sections.push(currentSection);
-      currentSection = { heading, nodes: [node] };
-      continue;
-    }
-    if (currentSection) currentSection.nodes.push(node);
-    else preamble.push(node);
-  }
-  if (currentSection) sections.push(currentSection);
-
-  if (sections.length === 0) return nodes;
-
+  // Produce a canonical section ordering (based on SECTION_HEADING_ORDER)
+  // while remaining non-destructive: we do not drop any nodes, we only
+  // re-group them for the canonical view. Relative ordering within a
+  // section is preserved and notes/captions remain attached to their
+  // original section buckets.
+  const preface: Array<Record<string, unknown>> = [];
   const known = new Map<string, Array<Record<string, unknown>>>();
-  const unknown: Array<Array<Record<string, unknown>>> = [];
-  for (const section of sections) {
-    if (!SECTION_HEADING_WORDS.has(section.heading)) {
-      unknown.push(section.nodes);
+  const encounteredOrder: string[] = [];
+
+  let currentHeading: string | null = null;
+  for (const node of nodes) {
+    const heading = sectionHeadingForNode(node) || "";
+    if (heading) {
+      currentHeading = heading;
+      if (!known.has(heading)) {
+        known.set(heading, []);
+        encounteredOrder.push(heading);
+      }
+      known.get(heading)!.push(node);
       continue;
     }
-    const existing = known.get(section.heading) ?? [];
-    existing.push(...(existing.length > 0 ? section.nodes.slice(1) : section.nodes));
-    known.set(section.heading, existing);
+
+    if (!currentHeading) {
+      preface.push(node);
+    } else {
+      known.get(currentHeading)!.push(node);
+    }
   }
 
+  // Run repairs and normalization on section buckets (non-destructive)
   repairSectionAssignments(known);
   normalizeSectionListContent(known);
 
-  const ordered: Array<Record<string, unknown>> = [...preamble];
-  for (const heading of SECTION_HEADING_ORDER) {
-    const sectionNodes = known.get(heading);
-    if (!sectionNodes?.length) continue;
-    ordered.push(...sectionNodes);
+  // Build final ordered list: preface, followed by canonical sections in
+  // SECTION_HEADING_ORDER (if present), then any remaining encountered
+  // headings in their original encounter order.
+  const result: Array<Record<string, unknown>> = [];
+  result.push(...preface);
+
+  const added = new Set<string>();
+  for (const h of SECTION_HEADING_ORDER) {
+    if (known.has(h)) {
+      result.push(...known.get(h)!);
+      added.add(h);
+    }
   }
-  for (const sectionNodes of unknown) ordered.push(...sectionNodes);
-  return ordered;
+
+  for (const h of encounteredOrder) {
+    if (!added.has(h)) result.push(...known.get(h)!);
+  }
+
+  return result;
 }
 
 function repairSectionAssignments(known: Map<string, Array<Record<string, unknown>>>) {

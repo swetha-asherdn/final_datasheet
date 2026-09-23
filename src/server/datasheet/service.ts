@@ -61,7 +61,7 @@ export async function createDatasheetFromExtraction(params: { projectId: string;
   return serializeDatasheetBundle(document.toObject(), template.toObject());
 }
 
-export async function regenerateDatasheetFromExtraction(params: { projectId: string; ownerId: string }) {
+export async function regenerateDatasheetFromExtraction(params: { projectId: string; ownerId: string; force?: boolean }) {
   const ids = parseOwnerProjectIds(params);
   const document = await DatasheetDocumentModel.findOne({ projectId: ids.projectObjectId, ownerId: ids.ownerObjectId }).sort({ createdAt: -1 });
   if (!document) throw new AppError("Datasheet document not found", 404, { code: "DATASHEET_NOT_FOUND" });
@@ -76,11 +76,14 @@ export async function regenerateDatasheetFromExtraction(params: { projectId: str
   document.title = normalized.title;
   document.productCode = normalized.productCode;
   document.productCategory = normalized.productCategory;
-  document.editorJson = normalized.editorJson;
+  // Preserve manual edits by default. Only overwrite editorJson when caller passes { force: true }.
+  if (params.force) {
+    document.editorJson = normalized.editorJson;
+    document.markModified("editorJson");
+  }
   document.sourceCleanupReport = normalized.cleanupReport;
   document.status = "READY_FOR_EDIT";
   document.lastSavedAt = new Date();
-  document.markModified("editorJson");
   document.markModified("sourceCleanupReport");
   await document.save();
 
@@ -133,7 +136,18 @@ export async function getDatasheetForProject(params: { projectId: string; ownerI
 }
 
 export async function updateDatasheetForProject(params: { projectId: string; ownerId: string; input: unknown }) {
-  const patch = datasheetPatchSchema.parse(params.input);
+  let patch;
+  try {
+    patch = datasheetPatchSchema.parse(params.input);
+  } catch (err) {
+    try {
+      // Log diagnostic info to help identify client payload mismatches during development
+      console.error("[updateDatasheetForProject] Zod validation failed for input:", JSON.stringify(params.input, null, 2));
+    } catch (e) {
+      console.error("[updateDatasheetForProject] Zod validation failed and input could not be stringified");
+    }
+    throw err;
+  }
   const ids = parseOwnerProjectIds(params);
   const current = await DatasheetDocumentModel.findOne({ projectId: ids.projectObjectId, ownerId: ids.ownerObjectId }).sort({ createdAt: -1 });
   if (!current) throw new AppError("Datasheet document not found", 404, { code: "DATASHEET_NOT_FOUND" });

@@ -1,11 +1,11 @@
 "use client";
 
-import React, { useEffect, useState, useTransition } from "react";
+import React, { useEffect, useState, useTransition, useRef } from "react";
 import { AlertTriangle, Bot, FileText, ImageIcon, Sparkles, Table2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-type ProjectStatus = "DRAFT" | "UPLOADED" | "QUEUED" | "PROCESSING" | "REVIEW_REQUIRED" | "FAILED";
+import type { ProjectStatus } from "@/lib/project-status";
 type Summary = { textBlockCount: number; imageCount: number; tableCount: number; warningCount: number; ocrUsed: boolean; nativeTextDetected: boolean };
 type Run = { id: string; status: string; pageCount: number; summary: Summary; warnings: string[]; errorSummary: string | null };
 type PageSummary = { pageNumber: number; width: number; height: number; textBlockCount: number; imageCount: number; tableCount: number; warnings: string[]; confidence: number; previewUrl?: string };
@@ -62,6 +62,7 @@ export function ExtractionReview({ projectId, status, originalPdfUrl }: { projec
 
   useEffect(() => {
     let active = true;
+    let interval: number | null = null;
     async function load() {
       try {
         await loadSummary();
@@ -71,11 +72,13 @@ export function ExtractionReview({ projectId, status, originalPdfUrl }: { projec
       }
     }
     void load();
-    if (!["QUEUED", "PROCESSING"].includes(status)) return () => { active = false; };
-    const interval = window.setInterval(() => void load(), 3500);
+    // Only poll when status indicates active processing
+    if (["QUEUED", "PROCESSING"].includes(status)) {
+      interval = window.setInterval(() => void load(), 3500);
+    }
     return () => {
       active = false;
-      window.clearInterval(interval);
+      if (interval) window.clearInterval(interval);
     };
   }, [projectId, status]);
 
@@ -245,6 +248,7 @@ export function ExtractionReview({ projectId, status, originalPdfUrl }: { projec
 function ArtifactImage({ src, alt, className, placeholderClassName, loadingLabel, missingLabel, failedLabel, retryLabel, wrapperClassName }: ArtifactImageProps) {
   const [status, setStatus] = useState<ArtifactStatus>(src ? "loading" : "missing");
   const [retryCount, setRetryCount] = useState(0);
+  const cachedSrcRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!src) {
@@ -253,9 +257,15 @@ function ArtifactImage({ src, alt, className, placeholderClassName, loadingLabel
     }
 
     let active = true;
+    // avoid reloading the same src multiple times
+    if (cachedSrcRef.current === src) {
+      setStatus("loaded");
+      return;
+    }
     const image = new window.Image();
     setStatus("loading");
     image.onload = () => {
+      cachedSrcRef.current = src ?? null;
       if (active) setStatus("loaded");
     };
     image.onerror = () => {

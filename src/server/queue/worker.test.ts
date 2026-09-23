@@ -65,7 +65,7 @@ describe("Node extraction worker", () => {
     const { processExtractionJob } = await import("@/server/queue/worker");
     await processExtractionJob(jobData);
 
-    const hasProcessingUpdate = projectUpdateOneMock.mock.calls.some(([, update]) => JSON.stringify(update).includes('"status":"PROCESSING"'));
+    const hasProcessingUpdate = projectUpdateOneMock.mock.calls.some((call: any) => JSON.stringify(call?.[1] ?? {}).includes('\"status\":\"PROCESSING\"'));
     expect(hasProcessingUpdate).toBe(false);
     expect(projectUpdateOneMock).toHaveBeenCalledWith({ _id: jobData.projectId }, expect.objectContaining({ $set: expect.objectContaining({ status: "REVIEW_REQUIRED" }) }));
   });

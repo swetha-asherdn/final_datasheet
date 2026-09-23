@@ -391,6 +391,85 @@ describe("generic datasheet normalization", () => {
     const json = convertToTiptapJson([basePage(1)]);
     expect(JSON.stringify(json)).not.toContain("Source page");
   });
+
+  it("does not suppress nearby headings when a table bbox is oversized", () => {
+    // Large table bbox covering most of the page but with clear cell structure
+    const tableBox = { x: 50, y: 120, width: 480, height: 640 };
+    const rows = [
+      [{ text: "H1" }, { text: "H2" }, { text: "H3" }],
+      [{ text: "cell-value" }, { text: "v" }, { text: "v" }],
+      [{ text: "v" }, { text: "v" }, { text: "v" }],
+      [{ text: "v" }, { text: "v" }, { text: "v" }]
+    ];
+
+    const page: NormalizablePage = basePage(1, {
+      textBlocks: [
+        { id: "general-heading", pageNumber: 1, text: "GENERAL DESCRIPTION", boundingBox: { x: 60, y: 130, width: 300, height: 18 }, fontSize: 13, confidence: 0.95, readingOrderIndex: 0 },
+        // a flattened text block that sits inside an approximated table cell and should be suppressed
+        { id: "cell-1", pageNumber: 1, text: "cell-value", boundingBox: { x: 220, y: 290, width: 100, height: 14 }, fontSize: 9, confidence: 0.9, readingOrderIndex: 1 }
+      ],
+      tables: [
+        { id: "big-table", pageNumber: 1, confidence: 0.9, boundingBox: tableBox, rows }
+      ],
+      images: []
+    });
+
+    const json = convertToTiptapJson([page]);
+    const serialized = JSON.stringify(json);
+
+    // Heading must survive despite being within the large table bbox
+    expect(serialized).toContain("GENERAL DESCRIPTION");
+
+    // The flattened cell text should only appear once (inside the table) and not as a standalone paragraph
+    expect((serialized.match(/cell-value/g) || []).length).toBe(1);
+  });
+
+  it("detects Cyrillic headings and treats them as headings without hardcoding phrases", () => {
+    const page: NormalizablePage = basePage(1, {
+      textBlocks: [
+        { id: "rus-heading", pageNumber: 1, text: "Общее описание", boundingBox: { x: 60, y: 130, width: 300, height: 18 }, fontSize: 13, confidence: 0.95, readingOrderIndex: 0 },
+        { id: "rus-body", pageNumber: 1, text: "Разрабатываемые кристаллы соответствуют ...", boundingBox: { x: 60, y: 150, width: 420, height: 40 }, fontSize: 10, confidence: 0.9, readingOrderIndex: 1 }
+      ],
+      images: [],
+      tables: []
+    });
+
+    const json = convertToTiptapJson([page]);
+    const headings = json.content.filter((n) => n.type === "heading").map((n) => JSON.stringify(n));
+    expect(headings.some((h) => h.includes("Общее описание"))).toBe(true);
+    // body text remains as paragraph
+    const paragraphs = json.content.filter((n) => n.type === "paragraph").map((n) => JSON.stringify(n));
+    expect(paragraphs.some((p) => p.includes("Разрабатываемые"))).toBe(true);
+  });
+
+  it("continues to detect English headings and does not regress", () => {
+    const page: NormalizablePage = basePage(1, {
+      textBlocks: [
+        { id: "eng-heading", pageNumber: 1, text: "GENERAL DESCRIPTION", boundingBox: { x: 60, y: 130, width: 300, height: 18 }, fontSize: 13, confidence: 0.95, readingOrderIndex: 0 },
+        { id: "eng-body", pageNumber: 1, text: "The device operates over -40C to 125C.", boundingBox: { x: 60, y: 150, width: 420, height: 40 }, fontSize: 10, confidence: 0.9, readingOrderIndex: 1 }
+      ],
+      images: [],
+      tables: []
+    });
+
+    const json = convertToTiptapJson([page]);
+    const headings = json.content.filter((n) => n.type === "heading").map((n) => JSON.stringify(n));
+    expect(headings.some((h) => h.includes("GENERAL DESCRIPTION"))).toBe(true);
+  });
+
+  it("does not misclassify normal body text as heading", () => {
+    const page: NormalizablePage = basePage(1, {
+      textBlocks: [
+        { id: "body-1", pageNumber: 1, text: "This is a normal paragraph with some CAPITALIZED words but not a heading.", boundingBox: { x: 60, y: 130, width: 420, height: 40 }, fontSize: 11, confidence: 0.95, readingOrderIndex: 0 }
+      ],
+      images: [],
+      tables: []
+    });
+
+    const json = convertToTiptapJson([page]);
+    const headings = json.content.filter((n) => n.type === "heading");
+    expect(headings.length).toBe(0);
+  });
 });
 
 

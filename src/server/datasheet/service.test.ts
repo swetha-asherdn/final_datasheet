@@ -127,9 +127,10 @@ describe("regenerateDatasheetFromExtraction", () => {
     expect(documentRecord.title).toBe("Low-Dropout Regulators");
     expect(documentRecord.productCode).toBe("CW29150R-XX / CW29150R-ADJ / CW29151R-XX");
     expect(documentRecord.productCategory).toBe("Low-Dropout Regulators");
-    expect(documentRecord.editorJson).toEqual(expect.objectContaining({ type: "doc" }));
+    // Editor JSON should be preserved by default (non-destructive).
+    expect(documentRecord.editorJson).toEqual({ type: "doc", content: [] });
     expect(documentRecord.status).toBe("READY_FOR_EDIT");
-    expect(documentRecord.markModified).toHaveBeenCalledWith("editorJson");
+    expect(documentRecord.markModified).not.toHaveBeenCalledWith("editorJson");
     expect(documentRecord.markModified).toHaveBeenCalledWith("sourceCleanupReport");
     expect(documentRecord.save).toHaveBeenCalledTimes(1);
     expect(templateRecord.productCode).toBe("CW29150R-XX / CW29150R-ADJ / CW29151R-XX");

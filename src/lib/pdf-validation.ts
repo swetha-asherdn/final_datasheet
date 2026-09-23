@@ -1,16 +1,11 @@
 import { createHash } from "crypto";
+import { PDFDocument } from "pdf-lib";
 import { AppError } from "@/lib/errors";
 import { env } from "@/lib/env";
 
 export type ValidatedPdf = { checksum: string; pageCount: number | null };
 
 const PDF_SIGNATURE = "%PDF-";
-
-type PdfJsGetDocument = typeof import("pdfjs-dist/legacy/build/pdf.mjs").getDocument;
-type PdfJsDocumentInit = Parameters<PdfJsGetDocument>[0] & {
-  disableWorker?: boolean;
-  useWorkerFetch?: boolean;
-};
 
 export function validatePdfBasics(fileName: string, mimeType: string, bytes: Buffer) {
   if (!fileName.toLowerCase().endsWith(".pdf")) {
@@ -47,21 +42,8 @@ export async function validatePdf(fileName: string, mimeType: string, bytes: Buf
 
 async function detectPageCount(bytes: Buffer): Promise<number | null> {
   try {
-    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const documentInit: PdfJsDocumentInit = {
-      data: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
-      disableWorker: true,
-      isEvalSupported: false,
-      useWorkerFetch: false
-    };
-    const loadingTask = pdfjs.getDocument(documentInit);
-    const document = await loadingTask.promise;
-
-    try {
-      return Number.isFinite(document.numPages) ? document.numPages : null;
-    } finally {
-      await document.destroy();
-    }
+    const document = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    return document.getPageCount();
   } catch (error) {
     logPdfParseError(error);
     return null;

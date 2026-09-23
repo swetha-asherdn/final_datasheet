@@ -12,7 +12,7 @@ const uploadPrivateObjectMock = vi.hoisted(() => vi.fn(async () => undefined));
 const getPrivateObjectMock = vi.hoisted(() => vi.fn());
 const launchMock = vi.hoisted(() => vi.fn());
 const resolveChromiumMock = vi.hoisted(() => vi.fn(() => "C:\\Tools\\chrome.exe"));
-const getDocumentMock = vi.hoisted(() => vi.fn());
+const pdfDocumentLoadMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/server/models/project", () => ({ ProjectModel: { findOne: projectFindOneMock, exists: projectExistsMock } }));
 vi.mock("@/server/models/datasheet-document", () => ({ DatasheetDocumentModel: { findOne: documentFindOneMock } }));
@@ -22,7 +22,7 @@ vi.mock("@/server/models/datasheet-export", () => ({ DatasheetExportModel: { cre
 vi.mock("@/server/extraction/service", () => ({ getExtractedImageArtifactForProject: vi.fn(async () => null) }));
 vi.mock("@/server/storage/s3", () => ({ uploadPrivateObject: uploadPrivateObjectMock, getPrivateObject: getPrivateObjectMock }));
 vi.mock("puppeteer-core", () => ({ default: { launch: launchMock } }));
-vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({ getDocument: getDocumentMock }));
+vi.mock("pdf-lib", () => ({ PDFDocument: { load: pdfDocumentLoadMock } }));
 vi.mock("@/server/datasheet/chromium", () => ({ resolveChromiumExecutablePath: resolveChromiumMock }));
 
 import {
@@ -87,7 +87,7 @@ beforeEach(() => {
   getPrivateObjectMock.mockReset();
   launchMock.mockReset();
   resolveChromiumMock.mockClear();
-  getDocumentMock.mockReset();
+  pdfDocumentLoadMock.mockReset();
 
   projectFindOneMock.mockReturnValue(leanDoc({ _id: projectId, name: "Test Project" }));
   projectExistsMock.mockResolvedValue(true);
@@ -112,9 +112,7 @@ beforeEach(() => {
     primaryColor: "#0D2B55",
     accentColor: "#D6533E",
   }));
-  getDocumentMock.mockReturnValue({
-    promise: Promise.resolve({ numPages: 1, destroy: vi.fn(async () => undefined) }),
-  });
+  pdfDocumentLoadMock.mockResolvedValue({ getPageCount: () => 1 });
 });
 
 describe("createPdfExportForProject", () => {
@@ -190,9 +188,7 @@ describe("createPdfExportForProject", () => {
       })),
       close: vi.fn(async () => undefined),
     });
-    getDocumentMock.mockReturnValueOnce({
-      promise: Promise.resolve({ numPages: 3, destroy: vi.fn(async () => undefined) }),
-    });
+    pdfDocumentLoadMock.mockResolvedValueOnce({ getPageCount: () => 3 });
 
     const result = await createPdfExportForProject({ projectId, ownerId });
 

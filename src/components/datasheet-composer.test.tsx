@@ -254,6 +254,86 @@ describe("DatasheetComposer", () => {
   });
 
 
+  it("saves the mapped editor JSON after applying confirmed supplier mappings", async () => {
+    const mappedBundle = {
+      ...initialBundle,
+      document: {
+        ...initialBundle.document,
+        productCode: "CW29150R-XX / CW29150R-ADJ / CW29151R-XX",
+        editorJson: {
+          type: "doc",
+          content: [{
+            type: "paragraph",
+            content: [{ type: "text", text: "CW29150R-XX / CW29150R-ADJ / CW29151R-XX" }],
+          }],
+        },
+      },
+    };
+
+    const patchPayloads: any[] = [];
+    const defaultFetchMock = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/api/projects/project-1/datasheet/create")) {
+        return jsonResponse(mappedBundle, 201);
+      }
+      if (url.endsWith("/api/projects/project-1/datasheet") && init?.method === "PATCH") {
+        const payload = JSON.parse(String(init.body ?? "{}"));
+        patchPayloads.push(payload);
+        return jsonResponse({
+          ...mappedBundle,
+          document: {
+            ...mappedBundle.document,
+            editorJson: payload.editorJson,
+            lastSavedAt: "2026-07-08T10:15:00.000Z",
+          },
+        }, 200);
+      }
+      return defaultFetchMock ? defaultFetchMock(input, init) : jsonResponse({ ok: true }, 200);
+    });
+
+    await createDatasheet();
+
+    const mappingSummary = Array.from(container.querySelectorAll("summary")).find((node) => node.textContent?.includes("Supplier Product Code Mapping"));
+    expect(mappingSummary).toBeTruthy();
+    await act(async () => {
+      (mappingSummary as HTMLElement).click();
+    });
+    await flush();
+
+    const confirmButtons = Array.from(container.querySelectorAll("button")).filter((node) => node.textContent?.includes("Confirm"));
+    expect(confirmButtons.length).toBeGreaterThan(0);
+    await act(async () => {
+      (confirmButtons[0] as HTMLButtonElement).click();
+    });
+    await flush();
+
+    const applyButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Apply confirmed mappings"));
+    expect(applyButton).toBeTruthy();
+    await act(async () => {
+      (applyButton as HTMLButtonElement).click();
+    });
+    await flush();
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Save"));
+    expect(saveButton).toBeTruthy();
+    await act(async () => {
+      (saveButton as HTMLButtonElement).click();
+    });
+    await flush();
+
+    expect(patchPayloads.length).toBeGreaterThan(0);
+    const mappedPayload = patchPayloads.find((payload) => {
+      const text = payload.editorJson?.content?.flatMap((node: any) => node.content ?? []).map((item: any) => item.text).join(" ") ?? "";
+      return text.includes("VS-CW29150R-XX");
+    });
+    expect(mappedPayload).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/project-1/datasheet",
+      expect.objectContaining({ method: "PATCH" }),
+    );
+  });
+
   it("keeps generated datasheet list spacing compact in editor CSS", () => {
     const css = readFileSync("src/app/globals.css", "utf8");
     expect(css).toContain(".ProseMirror ul { @apply mb-2 list-disc space-y-0.5 pl-5; }");
@@ -277,6 +357,48 @@ describe("DatasheetComposer", () => {
     await flush();
 
     expect(container.textContent).toContain("Save failed: Invalid request");
+  });
+
+  it("drops null node attrs and null mark attrs from editor JSON before PATCHing the datasheet", async () => {
+    const originalEditorJson = structuredClone(initialBundle.document.editorJson);
+    initialBundle.document.editorJson = {
+      type: "doc",
+      content: [{
+        type: "paragraph",
+        attrs: null,
+        content: [{
+          type: "text",
+          text: "Editable body",
+          marks: [{ type: "bold", attrs: null }, { type: "italic", attrs: { class: "note" } }]
+        }]
+      }]
+    };
+
+    try {
+      await createDatasheet();
+      await act(async () => clickButton("Save"));
+      await flush();
+
+      const saveCall = fetchMock.mock.calls.find(([url, init]) => {
+        if (typeof url !== "string") return false;
+        return url.endsWith("/api/projects/project-1/datasheet") && init?.method === "PATCH";
+      });
+      expect(saveCall).toBeDefined();
+      const requestBody = JSON.parse(String((saveCall?.[1] as RequestInit | undefined)?.body ?? "{}"));
+      expect(requestBody.editorJson.content[0].attrs).toBeDefined();
+      expect(requestBody.editorJson.content[0].attrs.blockId).toBeDefined();
+      expect(requestBody.editorJson.content[0].attrs.keepWithNext).toBe(false);
+      expect(requestBody.editorJson.content[0].content[0].marks).toEqual([
+        { type: "bold" },
+        { type: "italic" }
+      ]);
+      expect(requestBody.editorJson.type).toBe("doc");
+      expect(requestBody.title).toBe("Generic Datasheet");
+      expect(requestBody.productCode).toBe("VS123");
+      expect(requestBody.productCategory).toBe("Regulator");
+    } finally {
+      initialBundle.document.editorJson = originalEditorJson;
+    }
   });
 
   it("shows regenerate after a datasheet exists and calls the route", async () => {

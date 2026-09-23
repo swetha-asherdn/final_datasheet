@@ -27,4 +27,16 @@ describe("product code replacement safety", () => {
     expect(result.text).toBe("VIN=12V and 3.3V and VOUT=5V.");
     expect(result.warnings.some((warning) => warning.includes("unsafe") || warning.includes("partial"))).toBe(true);
   });
+
+  it("never reprocesses a Vellore replacement into VS-VS-VS recursion", () => {
+    const result = replaceProductCodeTokens({
+      text: "CW29150R-XX / CW29150R-ADJ / CW29151R-XX",
+      find: "CW29150R",
+      replaceWith: "VS-CW29150R",
+      mode: "starts-with",
+    });
+
+    expect(result.text).toBe("VS-CW29150R-XX / VS-CW29150R-ADJ / CW29151R-XX");
+    expect(result.text).not.toContain("VS-VS-");
+  });
 });

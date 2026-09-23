@@ -26,7 +26,8 @@ describe("POST /api/projects/[projectId]/datasheet/regenerate", () => {
     const response = await POST(new Request("http://localhost/api/projects/p/datasheet/regenerate", { method: "POST" }), { params: Promise.resolve({ projectId: "64f000000000000000000001" }) });
 
     expect(response.status).toBe(200);
-    expect(regenerateDatasheetMock).toHaveBeenCalledWith({ projectId: "64f000000000000000000001", ownerId: "64f000000000000000000000" });
+    // route forwards force flag (defaults to false when absent)
+    expect(regenerateDatasheetMock).toHaveBeenCalledWith({ projectId: "64f000000000000000000001", ownerId: "64f000000000000000000000", force: false });
     await expect(response.json()).resolves.toEqual(expect.objectContaining({ qualitySummary: expect.objectContaining({ sectionsDetected: 12 }) }));
   });
 });
