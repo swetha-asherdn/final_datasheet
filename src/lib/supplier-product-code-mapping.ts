@@ -20,11 +20,20 @@ export type SupplierCodeCandidate = {
   source: string;
 };
 
+export type ReplacementReport = {
+  attempted: number;
+  successful: number;
+  keptOriginal: number;
+  failed: number;
+  warnings: string[];
+};
+
 export type SupplierCodeReplacementResult = {
   text: string;
   replacedCount: number;
   warnings: string[];
   appliedMappings: SupplierCodeMapping[];
+  report: ReplacementReport;
 };
 
 export function buildSuggestedSupplierMappings(candidates: SupplierCodeCandidate[], defaultVellorePrefix = "VS"): SupplierCodeMapping[] {
@@ -49,11 +58,68 @@ export function autoApproveSupplierCodeMappings(mappings: SupplierCodeMapping[],
   });
 }
 
-export function detectSupplierProductCodes(pageTexts: Array<{ pageNumber: number; text: string }>): SupplierCodeCandidate[] {
-  const candidates: SupplierCodeCandidate[] = [];
+export function isTextContainingSupplierCode(text: string, supplierCode: string, vellorePrefix = "VS"): boolean {
+  if (!text || !supplierCode) return false;
+  const trimmed = supplierCode.trim();
+  if (!trimmed) return false;
+  const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(`(?<!(?:${vellorePrefix}[-_]|[A-Za-z0-9_-]))${escaped}(?![A-Za-z0-9_-])`, "i");
+  return regex.test(text);
+}
+
+export function detectAppliedSupplierProductCodes(
+  pageTexts: Array<{ pageNumber: number; text: string }>,
+  prefix = "VS"
+): Array<{ supplierCode: string; velloreCode: string; pageNumber: number; section: string }> {
+  const map = new Map<string, { supplierCode: string; velloreCode: string; pageNumber: number; section: string }>();
+  const pattern = new RegExp(`(?<![A-Za-z0-9_-])(${prefix}-([A-Z]{1,8}-?[0-9][A-Z0-9-]{2,}))(?![A-Za-z0-9_-])`, "gi");
 
   for (const page of pageTexts) {
-    const matches = Array.from(page.text.matchAll(/(?<![A-Z0-9])(?:[A-Z]{1,8}-?[0-9][A-Z0-9-]{2,})(?![A-Z0-9])/g)).map((m) => m[0]);
+    const matches = Array.from(page.text.matchAll(pattern));
+    for (const match of matches) {
+      const velloreCode = match[1];
+      const supplierCode = match[2];
+      if (!isExcludedSupplierCode(supplierCode) && !isNonProductTechnicalIdentifier(supplierCode)) {
+        if (!map.has(supplierCode)) {
+          map.set(supplierCode, {
+            supplierCode,
+            velloreCode,
+            pageNumber: page.pageNumber,
+            section: inferSection(page.text),
+          });
+        }
+      }
+    }
+  }
+
+  return Array.from(map.values());
+}
+
+export function detectAppliedSupplierProductCodesFromEditorJson(
+  editorJson: unknown,
+  prefix = "VS"
+): Array<{ supplierCode: string; velloreCode: string; pageNumber: number; section: string }> {
+  const textSegments: Array<{ pageNumber: number; text: string }> = [];
+  const walk = (node: unknown, pageNumber = 1) => {
+    if (!node || typeof node !== "object") return;
+    const record = node as Record<string, unknown>;
+    if (typeof record.text === "string") {
+      const text = record.text.trim();
+      if (text) textSegments.push({ pageNumber, text });
+    }
+    if (Array.isArray(record.content)) {
+      for (const child of record.content) walk(child, pageNumber);
+    }
+  };
+  walk(editorJson);
+  return detectAppliedSupplierProductCodes(textSegments, prefix);
+}
+
+export function detectSupplierProductCodes(pageTexts: Array<{ pageNumber: number; text: string }>): SupplierCodeCandidate[] {
+  const candidateMap = new Map<string, SupplierCodeCandidate>();
+
+  for (const page of pageTexts) {
+    const matches = Array.from(page.text.matchAll(/(?<![A-Za-z0-9_-])(?:[A-Z]{1,8}-?[0-9][A-Z0-9-]{2,})(?![A-Za-z0-9_-])/gi)).map((m) => m[0]);
     const unique = Array.from(new Set(matches.filter((match) => !isExcludedSupplierCode(match))));
 
     for (const supplierCode of unique) {
@@ -62,17 +128,22 @@ export function detectSupplierProductCodes(pageTexts: Array<{ pageNumber: number
       if (isNonProductTechnicalIdentifier(normalized)) continue;
 
       const section = inferSection(page.text);
-      candidates.push({
-        supplierCode: normalized,
-        pageNumber: page.pageNumber,
-        section,
-        confidence: estimateCandidateConfidence(normalized, page.text),
-        source: "extracted-text",
-      });
+      const confidence = estimateCandidateConfidence(normalized, page.text);
+
+      const existing = candidateMap.get(normalized);
+      if (!existing || confidence > existing.confidence) {
+        candidateMap.set(normalized, {
+          supplierCode: normalized,
+          pageNumber: existing?.pageNumber ?? page.pageNumber,
+          section: existing && existing.section !== "body" ? existing.section : section,
+          confidence: Math.max(confidence, existing?.confidence ?? 0),
+          source: "extracted-text",
+        });
+      }
     }
   }
 
-  return candidates;
+  return Array.from(candidateMap.values());
 }
 
 export function detectSupplierProductCodesFromEditorJson(editorJson: unknown): SupplierCodeCandidate[] {
@@ -95,12 +166,67 @@ export function detectSupplierProductCodesFromEditorJson(editorJson: unknown): S
   return detectSupplierProductCodes(textSegments);
 }
 
+export function revertSupplierProductCodeMappings({
+  text,
+  mappings,
+}: {
+  text: string;
+  mappings: SupplierCodeMapping[];
+}): { text: string; replacedCount: number } {
+  if (!text || mappings.length === 0) return { text, replacedCount: 0 };
+
+  const tokenPattern = /[A-Za-z0-9][A-Za-z0-9-]*/g;
+  const matches = Array.from(text.matchAll(tokenPattern));
+  const resultChunks: string[] = [];
+  let lastIndex = 0;
+  let replacedCount = 0;
+
+  for (const match of matches) {
+    const start = match.index ?? 0;
+    const token = match[0];
+    resultChunks.push(text.slice(lastIndex, start));
+
+    let tokenReplacement: string | null = null;
+    const tokenUpper = token.toUpperCase();
+
+    for (const mapping of mappings) {
+      const supplierCode = mapping.supplierCode.trim();
+      const velloreCode = mapping.velloreCode.trim();
+      if (!supplierCode) continue;
+
+      const supplierUpper = supplierCode.toUpperCase();
+      const velloreUpper = velloreCode.toUpperCase();
+
+      const isMatch =
+        (velloreUpper && tokenUpper === velloreUpper) ||
+        tokenUpper === `VS-${supplierUpper}` ||
+        (tokenUpper.startsWith("VS-") && tokenUpper.endsWith(supplierUpper)) ||
+        (tokenUpper.startsWith("VSS-") && tokenUpper.endsWith(supplierUpper));
+
+      if (isMatch && tokenUpper !== supplierUpper) {
+        tokenReplacement = supplierCode;
+        replacedCount += 1;
+        break;
+      }
+    }
+
+    resultChunks.push(tokenReplacement ?? token);
+    lastIndex = start + token.length;
+  }
+
+  resultChunks.push(text.slice(lastIndex));
+  return { text: resultChunks.join(""), replacedCount };
+}
+
 export function applySupplierProductCodeMappings({ text, mappings }: { text: string; mappings: SupplierCodeMapping[]; }): SupplierCodeReplacementResult {
-  // Work only on confirmed/pending mappings and dedupe by supplierCode
-  const pendingMappings = mappings.filter((m) => m.status === "confirmed" || m.status === "pending");
+  // Dedupe mappings by supplierCode, giving priority to confirmed/pending over ignored
+  const sortedByStatus = [...mappings].sort((a, b) => {
+    const statusOrder: Record<string, number> = { confirmed: 0, pending: 1, ignored: 2 };
+    return (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3);
+  });
   const seen = new Set<string>();
   const uniqueMappings: SupplierCodeMapping[] = [];
-  for (const m of pendingMappings) {
+  for (const m of sortedByStatus) {
     const key = String(m.supplierCode).trim();
     if (!seen.has(key)) {
       seen.add(key);
@@ -117,6 +243,8 @@ export function applySupplierProductCodeMappings({ text, mappings }: { text: str
   const warnings: string[] = [];
   const appliedMappings: SupplierCodeMapping[] = [];
   let replacedCount = 0;
+  let attemptedCount = 0;
+  let keptOriginalCount = 0;
 
   // Single-pass over the original source text
   const tokenPattern = /[A-Za-z0-9][A-Za-z0-9-]*/g;
@@ -145,36 +273,32 @@ export function applySupplierProductCodeMappings({ text, mappings }: { text: str
       if (!isLikelyProductCodeToken(supplierCode)) continue;
 
       // Protect against reprocessing already-generated replacements
-      if (token === replacementCode || token.startsWith(replacementCode) || token.includes(replacementCode)) {
+      if (token === replacementCode) {
         tokenReplacement = token;
         break;
       }
 
-      if (token === supplierCode) {
-        tokenReplacement = replacementCode;
-        replacedCount += 1;
-        appliedMappings.push(mapping);
+      // Exact match rule per Scope Section 5.4:
+      // Replace exact product-code matches only. Also allow replacing previous Vellore codes when updating.
+      const isSupplierMatch = token === supplierCode;
+      const isPreviousVelloreMatch =
+        token === `VS-${supplierCode}` ||
+        (token.startsWith("VS-") && token.endsWith(supplierCode)) ||
+        (token.startsWith("VSS-") && token.endsWith(supplierCode));
+
+      if ((isSupplierMatch || isPreviousVelloreMatch) && token !== replacementCode) {
+        attemptedCount += 1;
+        if (mapping.status === "confirmed" || (mapping.status === "pending" && mapping.confidence >= 0.8)) {
+          tokenReplacement = replacementCode;
+          replacedCount += 1;
+          appliedMappings.push(mapping);
+        } else {
+          // Unconfirmed or unsafe mapping: keep original code per Scope rule 7!
+          tokenReplacement = token;
+          keptOriginalCount += 1;
+          warnings.push(`Original product code "${supplierCode}" retained (status: ${mapping.status}, confidence: ${mapping.confidence}).`);
+        }
         break;
-      }
-
-      if (token.startsWith(supplierCode) && token.length > supplierCode.length) {
-        const suffix = token.slice(supplierCode.length);
-        if (/^[A-Za-z0-9-]+$/.test(suffix)) {
-          tokenReplacement = replacementCode + suffix;
-          replacedCount += 1;
-          appliedMappings.push(mapping);
-          break;
-        }
-      }
-
-      if (token.includes(supplierCode) && token.length > supplierCode.length && token !== supplierCode) {
-        const next = token.split(supplierCode).join(replacementCode);
-        if (next !== token && !next.includes(replacementCode + replacementCode)) {
-          tokenReplacement = next;
-          replacedCount += 1;
-          appliedMappings.push(mapping);
-          break;
-        }
       }
     }
 
@@ -197,7 +321,7 @@ export function applySupplierProductCodeMappings({ text, mappings }: { text: str
       continue;
     }
 
-    const originalContained = Array.from(originalTokens).some((t) => t === supplierCode || t.startsWith(supplierCode) || t.includes(supplierCode));
+    const originalContained = Array.from(originalTokens).some((t) => t === supplierCode);
     const wasApplied = appliedMappings.some((item) => item.id === mapping.id);
     const alreadyPresent = nextText.includes(replacementCode);
 
@@ -215,7 +339,15 @@ export function applySupplierProductCodeMappings({ text, mappings }: { text: str
 
   const uniqueWarnings = Array.from(new Set(warnings));
 
-  return { text: nextText, replacedCount, warnings: uniqueWarnings, appliedMappings };
+  const report: ReplacementReport = {
+    attempted: attemptedCount,
+    successful: replacedCount,
+    keptOriginal: keptOriginalCount,
+    failed: 0,
+    warnings: uniqueWarnings,
+  };
+
+  return { text: nextText, replacedCount, warnings: uniqueWarnings, appliedMappings, report };
 }
 
 function isExcludedSupplierCode(value: string) {

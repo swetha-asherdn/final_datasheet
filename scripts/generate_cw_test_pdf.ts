@@ -12,7 +12,7 @@ async function main() {
     pageNumber: 1,
     section: 'body',
     confidence: 0.99,
-    status: 'confirmed',
+    status: 'confirmed' as const,
   }));
 
   const html = `<!doctype html>

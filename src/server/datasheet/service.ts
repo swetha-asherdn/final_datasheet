@@ -143,7 +143,7 @@ export async function updateDatasheetForProject(params: { projectId: string; own
     try {
       // Log diagnostic info to help identify client payload mismatches during development
       console.error("[updateDatasheetForProject] Zod validation failed for input:", JSON.stringify(params.input, null, 2));
-    } catch (e) {
+    } catch {
       console.error("[updateDatasheetForProject] Zod validation failed and input could not be stringified");
     }
     throw err;
@@ -277,6 +277,18 @@ function applyDocumentPatch(document: Record<string, unknown> & { markModified?:
       document.markModified("editorJson");
     }
   }
+  if (patch.supplierCodeMappings !== undefined) {
+    document.supplierCodeMappings = patch.supplierCodeMappings;
+    if (typeof document.markModified === "function") {
+      document.markModified("supplierCodeMappings");
+    }
+  }
+  if (patch.latestReplacementReport !== undefined) {
+    document.latestReplacementReport = patch.latestReplacementReport;
+    if (typeof document.markModified === "function") {
+      document.markModified("latestReplacementReport");
+    }
+  }
 }
 
 function applyTemplatePatch(template: Record<string, unknown>, patch: TemplateSettingsPatch) {
@@ -335,6 +347,14 @@ function serializeDatasheetBundle(document: Record<string, unknown>, template: R
       productCategory: String(document.productCategory ?? ""),
       editorJson: editorJsonSchema.parse(document.editorJson),
       sourceCleanupReport: document.sourceCleanupReport as SourceCleanupReport,
+      supplierCodeMappings: Array.isArray(document.supplierCodeMappings) ? document.supplierCodeMappings : [],
+      latestReplacementReport: document.latestReplacementReport || {
+        attempted: 0,
+        successful: 0,
+        keptOriginal: 0,
+        failed: 0,
+        warnings: []
+      },
       createdFromExtractionAt: new Date(document.createdFromExtractionAt as Date).toISOString(),
       lastSavedAt: new Date(document.lastSavedAt as Date).toISOString()
     },

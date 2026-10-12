@@ -26,13 +26,13 @@ export type CleanupReasonCode = (typeof cleanupReasonCodes)[number];
 
 export const tiptapMarkSchema: z.ZodType<Record<string, unknown>> = z.object({
   type: z.string().min(1),
-  attrs: z.record(z.unknown()).optional()
+  attrs: z.record(z.unknown()).nullable().optional()
 });
 
 export const tiptapNodeSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
   z.object({
     type: z.string().min(1),
-    attrs: z.record(z.unknown()).optional(),
+    attrs: z.record(z.unknown()).nullable().optional(),
     content: z.array(tiptapNodeSchema).optional(),
     text: z.string().optional(),
     marks: z.array(tiptapMarkSchema).optional()
@@ -47,8 +47,8 @@ export const editorJsonSchema = z.object({
 export const templateSettingsPatchSchema = z.object({
   companyName: z.string().trim().min(1).max(120).optional(),
   website: z.string().trim().min(1).max(200).optional(),
-  productCode: z.string().trim().max(120).optional(),
-  productTitle: z.string().trim().max(200).optional(),
+  productCode: z.string().trim().max(300).optional(),
+  productTitle: z.string().trim().max(300).optional(),
   documentStatus: z.string().trim().max(80).optional(),
   revision: z.string().trim().max(80).optional(),
   layoutMode: z.enum(["two-column", "single-column"]).optional(),
@@ -64,15 +64,35 @@ export const templateSettingsPatchSchema = z.object({
   logoAssetPath: z.string().trim().max(500).optional()
 });
 
-export const datasheetPatchSchema = z.object({
-  title: z.string().trim().min(1).max(200).optional(),
-  productCode: z.string().trim().max(120).optional(),
-  productCategory: z.string().trim().max(160).optional(),
-  editorJson: editorJsonSchema.optional(),
-  status: z.enum(DATASHEET_DOCUMENT_STATUSES).optional()
+export const supplierCodeMappingItemSchema = z.object({
+  id: z.string().min(1),
+  supplierCode: z.string().min(1),
+  velloreCode: z.string().min(1),
+  pageNumber: z.number().int().default(1),
+  section: z.string().default("body"),
+  confidence: z.number().default(1.0),
+  status: z.enum(["pending", "confirmed", "ignored", "applied"]).default("confirmed"),
 });
 
-export const datasheetLayoutExportModeSchema = z.enum(["auto", "saved"]);
+export const replacementReportSchema = z.object({
+  attempted: z.number().nonnegative().default(0),
+  successful: z.number().nonnegative().default(0),
+  keptOriginal: z.number().nonnegative().default(0),
+  failed: z.number().nonnegative().default(0),
+  warnings: z.array(z.string()).default([]),
+});
+
+export const datasheetPatchSchema = z.object({
+  title: z.string().trim().min(1).max(300).optional(),
+  productCode: z.string().trim().max(300).optional(),
+  productCategory: z.string().trim().max(300).optional(),
+  editorJson: editorJsonSchema.optional(),
+  status: z.enum(DATASHEET_DOCUMENT_STATUSES).optional(),
+  supplierCodeMappings: z.array(supplierCodeMappingItemSchema).optional(),
+  latestReplacementReport: replacementReportSchema.optional()
+});
+
+export const datasheetLayoutExportModeSchema = z.enum(["auto", "saved", "direct"]);
 
 export const datasheetLayoutBlockSchema = z.object({
   id: z.string().min(1),

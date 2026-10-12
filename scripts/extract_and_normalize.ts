@@ -11,14 +11,15 @@ async function uploadFile(localPath: string, bucket: string, key: string) {
     region: process.env.S3_REGION || 'us-east-1',
     credentials: { accessKeyId: process.env.S3_ACCESS_KEY_ID || '', secretAccessKey: process.env.S3_SECRET_ACCESS_KEY || '' },
     forcePathStyle: (process.env.S3_FORCE_PATH_STYLE || 'true') === 'true'
-  } as any);
+  });
   const body = fs.readFileSync(localPath);
   const cmd = new PutObjectCommand({ Bucket: bucket, Key: key, Body: body, ContentType: 'application/pdf' });
-  await client.send(cmd);
+  await (client as unknown as { send: (c: unknown) => Promise<unknown> }).send(cmd);
 }
 
 async function main() {
-  const localPdf = path.resolve(process.cwd(), 'KD0860UF (1).pdf');
+  const targetFileName = process.argv[2] || 'KD0860UF (1).pdf';
+  const localPdf = path.resolve(process.cwd(), targetFileName);
   if (!fs.existsSync(localPdf)) {
     console.error('PDF not found at', localPdf);
     process.exit(2);
@@ -26,7 +27,7 @@ async function main() {
   const bucket = process.env.S3_BUCKET || 'pdf-projects';
   const ownerId = process.env.TEST_OWNER_ID || '64f000000000000000000000';
   const projectId = process.env.TEST_PROJECT_ID || '64f000000000000000000001';
-  const storageKey = `users/${ownerId}/projects/${projectId}/sources/KD0860UF.pdf`;
+  const storageKey = `users/${ownerId}/projects/${projectId}/sources/${path.basename(localPdf)}`;
 
   console.log('Uploading', localPdf, 'to', storageKey);
   await uploadFile(localPdf, bucket, storageKey);
@@ -45,7 +46,8 @@ async function main() {
     process.exit(3);
   }
   const manifest = await res.json();
-  const outManifest = path.resolve(process.cwd(), 'scratch', 'KD0860UF.manifest.json');
+  const safeBase = path.basename(localPdf).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const outManifest = path.resolve(process.cwd(), 'scratch', `${safeBase}.manifest.json`);
   fs.mkdirSync(path.dirname(outManifest), { recursive: true });
   fs.writeFileSync(outManifest, JSON.stringify(manifest, null, 2));
   console.log('Saved manifest to', outManifest);
@@ -54,7 +56,7 @@ async function main() {
   const { normalizeDatasheetExtraction } = await import('../src/server/datasheet/normalization');
   const pages = manifest.pages || manifest.pages;
   const normalized = normalizeDatasheetExtraction(pages);
-  const outNorm = path.resolve(process.cwd(), 'scratch', 'KD0860UF.normalized.json');
+  const outNorm = path.resolve(process.cwd(), 'scratch', `${safeBase}.normalized.json`);
   fs.writeFileSync(outNorm, JSON.stringify(normalized, null, 2));
   console.log('Saved normalized output to', outNorm);
   console.log('Title:', normalized.title);

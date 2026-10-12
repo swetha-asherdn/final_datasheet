@@ -213,6 +213,81 @@ export async function callPythonDocxRebrandService(request: PythonRebrandRequest
   }
 }
 
+export type PythonDirectPdfRebrandRequest = {
+  projectId: string;
+  ownerId: string;
+  sourceStorageKey: string;
+  mappings: Array<{
+    id?: string;
+    supplierCode: string;
+    velloreCode: string;
+    status: "pending" | "confirmed" | "ignored" | "applied";
+    confidence?: number;
+  }>;
+  branding: {
+    companyName: string;
+    logoStorageKey?: string | null;
+    productCode?: string | null;
+    productTitle?: string | null;
+    documentStatus?: string | null;
+    revision?: string | null;
+    primaryColor?: string | null;
+    accentColor?: string | null;
+  };
+  headerMaskTopPt?: number;
+  footerMaskBottomPt?: number;
+  website?: string;
+};
+
+export type PythonDirectPdfRebrandResponse = {
+  success: boolean;
+  pdfStorageKey?: string;
+  fileSize?: number;
+  pageCount?: number;
+  report: {
+    attempted: number;
+    successful: number;
+    keptOriginal: number;
+    failed: number;
+    warnings: string[];
+  };
+  error?: string;
+};
+
+export async function callPythonDirectPdfRebrandService(request: PythonDirectPdfRebrandRequest): Promise<PythonDirectPdfRebrandResponse> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), env.EXTRACTION_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(new URL("/rebrand-pdf-direct", env.PYTHON_WORKER_URL), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new AppError(`Python direct PDF rebrand failed with ${response.status}: ${body.slice(0, 300)}`, response.status >= 500 ? 502 : 422, {
+        code: response.status >= 500 ? "PYTHON_WORKER_ERROR" : "REBRAND_REJECTED"
+      });
+    }
+
+    const json = (await response.json()) as PythonDirectPdfRebrandResponse;
+    if (!json.success) {
+      throw new AppError(json.error || "Direct PDF rebrand returned success: false", 422, { code: "DIRECT_REBRAND_FAILED" });
+    }
+
+    return json;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new AppError("Direct PDF rebrand timed out", 504, { code: "REBRAND_TIMEOUT" });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 export async function callPythonDocxToPdfService(request: PythonExportRequest) {
   const controller = new AbortController();

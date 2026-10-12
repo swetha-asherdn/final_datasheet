@@ -16,6 +16,8 @@ describe("normalizeTechnicalText", () => {
     expect(normalizeTechnicalText("aluminum")).toBe("aluminum");
     expect(normalizeTechnicalText("200 um")).toBe(`200 ${MICRO}m`);
     expect(normalizeTechnicalText("200x200 um")).toBe(`200${TIMES}200 ${MICRO}m`);
+    expect(normalizeTechnicalText("u20m0*xu2m00")).toBe(`200${TIMES}200 ${MICRO}m`);
+    expect(normalizeTechnicalText("u 20m0*xu2m00")).toBe(`200${TIMES}200 ${MICRO}m`);
     expect(normalizeTechnicalText("(um)")).toBe(`(${MICRO}m)`);
     expect(normalizeTechnicalText("um")).toBe(`${MICRO}m`);
   });

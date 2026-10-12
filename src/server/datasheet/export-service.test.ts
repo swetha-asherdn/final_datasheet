@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const projectFindOneMock = vi.hoisted(() => vi.fn());
 const projectExistsMock = vi.hoisted(() => vi.fn());
 const documentFindOneMock = vi.hoisted(() => vi.fn());
+const documentFindByIdMock = vi.hoisted(() => vi.fn(() => ({ lean: vi.fn().mockResolvedValue(null) })));
 const templateFindOneMock = vi.hoisted(() => vi.fn());
 const layoutFindOneMock = vi.hoisted(() => vi.fn());
 const exportCreateMock = vi.hoisted(() => vi.fn());
@@ -14,12 +15,17 @@ const launchMock = vi.hoisted(() => vi.fn());
 const resolveChromiumMock = vi.hoisted(() => vi.fn(() => "C:\\Tools\\chrome.exe"));
 const pdfDocumentLoadMock = vi.hoisted(() => vi.fn());
 
+const callPythonDirectPdfRebrandMock = vi.hoisted(() => vi.fn());
+
 vi.mock("@/server/models/project", () => ({ ProjectModel: { findOne: projectFindOneMock, exists: projectExistsMock } }));
-vi.mock("@/server/models/datasheet-document", () => ({ DatasheetDocumentModel: { findOne: documentFindOneMock } }));
+vi.mock("@/server/models/datasheet-document", () => ({ DatasheetDocumentModel: { findOne: documentFindOneMock, findById: documentFindByIdMock } }));
 vi.mock("@/server/models/datasheet-template-settings", () => ({ DatasheetTemplateSettingsModel: { findOne: templateFindOneMock } }));
 vi.mock("@/server/models/datasheet-layout", () => ({ DatasheetLayoutModel: { findOne: layoutFindOneMock } }));
 vi.mock("@/server/models/datasheet-export", () => ({ DatasheetExportModel: { create: exportCreateMock, find: exportFindMock, findOne: exportFindOneMock } }));
-vi.mock("@/server/extraction/service", () => ({ getExtractedImageArtifactForProject: vi.fn(async () => null) }));
+vi.mock("@/server/extraction/service", () => ({
+  getExtractedImageArtifactForProject: vi.fn(async () => null),
+  callPythonDirectPdfRebrandService: callPythonDirectPdfRebrandMock,
+}));
 vi.mock("@/server/storage/s3", () => ({ uploadPrivateObject: uploadPrivateObjectMock, getPrivateObject: getPrivateObjectMock }));
 vi.mock("puppeteer-core", () => ({ default: { launch: launchMock } }));
 vi.mock("pdf-lib", () => ({ PDFDocument: { load: pdfDocumentLoadMock } }));
@@ -208,6 +214,40 @@ describe("createPdfExportForProject", () => {
     expect(record.status).toBe("FAILED");
     expect(record.errorMessage).toBe("Chromium unavailable");
     expect(result.downloadUrl).toBeNull();
+  });
+
+  it("invokes direct Python vector rebrand when preferredMode is direct", async () => {
+    projectFindOneMock.mockReturnValue(leanDoc({
+      _id: projectId,
+      name: "Test Project",
+      originalPdf: { storageKey: `projects/${projectId}/source.pdf` },
+    }));
+    const record = createExportRecord();
+    exportCreateMock.mockResolvedValue(record);
+    callPythonDirectPdfRebrandMock.mockResolvedValue({
+      success: true,
+      pdfStorageKey: `projects/${projectId}/exports/direct.pdf`,
+      fileSize: 12345,
+      pageCount: 9,
+      report: {
+        attempted: 12,
+        successful: 10,
+        keptOriginal: 2,
+        failed: 0,
+        warnings: ["Code retained"],
+      },
+    });
+
+    const result = await createPdfExportForProject({ projectId, ownerId, preferredMode: "direct" });
+
+    expect(callPythonDirectPdfRebrandMock).toHaveBeenCalledWith(expect.objectContaining({
+      projectId,
+      sourceStorageKey: "projects/64f000000000000000000001/source.pdf",
+    }));
+    expect(record.status).toBe("COMPLETED");
+    expect(record.exportMode).toBe("direct");
+    expect(record.storageKey).toBe(`projects/${projectId}/exports/direct.pdf`);
+    expect(result.downloadUrl).toContain("/download");
   });
 });
 

@@ -134,3 +134,17 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# Python
+__pycache__/
+*.pyc
+
+# Local scratch and test directories
+scratch/
+.tmp_pdf_compare/
+*.log
+*.pdf
+worker/app/*.png
+worker/app/*.pdf
+!public/**
+

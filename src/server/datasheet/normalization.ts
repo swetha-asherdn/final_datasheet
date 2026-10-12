@@ -127,14 +127,25 @@ const TITLE_REGION_RATIO = 0.16;
 const NEAR_CODE_REGION_RATIO = 0.22;
 const SECTION_HEADING_WORDS = new Set([
   "GENERAL DESCRIPTION",
+  "ОБЩЕЕ ОПИСАНИЕ",
   "PIN CONFIGURATION",
+  "НАЗНАЧЕНИЕ ВЫВОДОВ",
+  "PINOUT",
   "FEATURES",
+  "ОТЛИЧИТЕЛЬНЫЕ ОСОБЕННОСТИ",
+  "ОСОБЕННОСТИ",
+  "ГАБАРИТНЫЕ РАЗМЕРЫ",
   "APPLICATIONS",
   "TYPICAL APPLICATION",
   "ABSOLUTE MAXIMUM RATINGS",
+  "ПРЕДЕЛЬНО-ДОПУСТИМЫЙ РЕЖИМ",
+  "ПРЕДЕЛЬНО-ДОПУСТИМЫЕ РЕЖИМЫ",
   "RECOMMENDED OPERATING CONDITIONS",
+  "ОСНОВНЫЕ ПАРАМЕТРЫ И ХАРАКТЕРИСТИКИ",
   "ELECTRICAL CHARACTERISTICS",
+  "ЭЛЕКТРИЧЕСКИЕ ПАРАМЕТРЫ",
   "APPLICATION INFORMATION",
+  "УКАЗАНИЯ ПО ПРИМЕНЕНИЮ",
   "THERMAL DESIGN",
   "CAPACITOR REQUIREMENTS",
   "MINIMUM LOAD CURRENT",
@@ -149,15 +160,25 @@ const SECTION_HEADING_WORDS = new Set([
 ]);
 const SECTION_HEADING_ORDER = [
   "GENERAL DESCRIPTION",
+  "ОБЩЕЕ ОПИСАНИЕ",
   "PIN CONFIGURATION",
+  "НАЗНАЧЕНИЕ ВЫВОДОВ",
   "PINOUT",
   "FEATURES",
+  "ОТЛИЧИТЕЛЬНЫЕ ОСОБЕННОСТИ",
+  "ОСОБЕННОСТИ",
+  "ГАБАРИТНЫЕ РАЗМЕРЫ",
   "TYPICAL APPLICATION",
   "APPLICATIONS",
   "ABSOLUTE MAXIMUM RATINGS",
+  "ПРЕДЕЛЬНО-ДОПУСТИМЫЙ РЕЖИМ",
+  "ПРЕДЕЛЬНО-ДОПУСТИМЫЕ РЕЖИМЫ",
   "RECOMMENDED OPERATING CONDITIONS",
+  "ОСНОВНЫЕ ПАРАМЕТРЫ И ХАРАКТЕРИСТИКИ",
   "ELECTRICAL CHARACTERISTICS",
+  "ЭЛЕКТРИЧЕСКИЕ ПАРАМЕТРЫ",
   "APPLICATION INFORMATION",
+  "УКАЗАНИЯ ПО ПРИМЕНЕНИЮ",
   "THERMAL DESIGN",
   "CAPACITOR REQUIREMENTS",
   "MINIMUM LOAD CURRENT",
@@ -299,29 +320,42 @@ export function normalizeDatasheetExtraction(pages: NormalizablePage[]): Normali
 
 export function convertToTiptapJson(pages: NormalizablePage[], removedTextIds: Set<string> = new Set(), removedImageIds: Set<string> = new Set()): TiptapJson {
   const content: Array<Record<string, unknown>> = [];
+  const sortedPages = [...pages].sort((a, b) => a.pageNumber - b.pageNumber);
 
-  for (const page of [...pages].sort((a, b) => a.pageNumber - b.pageNumber)) {
+  for (let pageIdx = 0; pageIdx < sortedPages.length; pageIdx++) {
+    const page = sortedPages[pageIdx];
     const tableSuppressedTextIds = collectSuppressedTableTextIds(page);
     const captionSelections = pairFigureCaptions(page.textBlocks, page.images.filter((item) => isBodyRegion(page, item.boundingBox)));
     const captionTextIds = new Set(captionSelections.map((item) => item.block.id));
-    const textBlocks = orderTextBlocksForPage(page)
+    const textBlocks = orderTextBlocksForPage(page, tableSuppressedTextIds)
       .filter((block) => !tableSuppressedTextIds.has(block.id) && !captionTextIds.has(block.id));
     // mark cleanup decision on blocks so editor can show removed/uncertain items without losing content
-    for (const b of textBlocks) (b as any).cleanupDecision = removedTextIds.has(b.id) ? "removed" : "kept";
+    for (const b of textBlocks) (b as NormalizableTextBlock & { cleanupDecision?: string }).cleanupDecision = removedTextIds.has(b.id) ? "removed" : "kept";
     const tables = [...page.tables].sort(compareTables);
-    const images = page.images.filter((item) => isBodyRegion(page, item.boundingBox));
-    for (const img of images) (img as any).cleanupDecision = removedImageIds.has(img.id) ? "removed" : "kept";
+    const images = page.images
+      .filter((item) => isBodyRegion(page, item.boundingBox))
+      .filter((img) => !removedImageIds.has(img.id));
+    for (const img of images) (img as NormalizableImage & { cleanupDecision?: string }).cleanupDecision = removedImageIds.has(img.id) ? "removed" : "kept";
     const items = mergeOrderedPageItems(page, textBlocks, tables, images, captionSelections);
 
     for (const item of items) {
       if (item.kind === "text") appendTextBlock(content, item.block);
       else if (item.kind === "synthetic-heading") content.push(createHeadingNode(item.text));
-      else if (item.kind === "image") content.push(...createImageNodes(page, item.image, item.caption));
+      else if (item.kind === "image") {
+        if (!removedImageIds.has(item.image.id)) {
+          content.push(...createImageNodes(page, item.image, item.caption));
+        }
+      }
       else appendTable(content, item.table);
+    }
+
+    if (pageIdx < sortedPages.length - 1) {
+      content.push({ type: "pageBreak" });
     }
   }
 
-  const orderedContent = finalizeEditorContent(reorderKnownSections(content));
+  const rawOrderedContent = sortedPages.length > 1 ? content : reorderKnownSections(content);
+  const orderedContent = finalizeEditorContent(rawOrderedContent);
   if (process.env.NODE_ENV === "development" && (process.env.DEBUG_TEXT_QUALITY === "1" || process.env.DEBUG_EXPORT_LAYOUT === "1")) {
     const headings = orderedContent.map((node) => sectionHeadingForNode(node)).filter(Boolean);
     const warnings = collectTextQualityWarnings({ texts: orderedContent.map((node) => nodePlainText(node)).filter(Boolean), headings });
@@ -347,27 +381,54 @@ function appendTextBlock(content: Array<Record<string, unknown>>, block: Normali
     return;
   }
 
+  // Check if text has bullet points with a preceding lead-in heading / paragraph
+  const firstBulletMatch = normalizedText.match(/(?:^|\s)(?:•|[\u2022]|(?<!\w)[-*])\s+/);
+  if (firstBulletMatch && firstBulletMatch.index !== undefined && firstBulletMatch.index > 0) {
+    const leadIn = normalizedText.slice(0, firstBulletMatch.index).trim();
+    const rest = normalizedText.slice(firstBulletMatch.index).trim();
+    if (leadIn && rest) {
+      appendTextBlock(content, { ...block, text: leadIn });
+      appendTextBlock(content, { ...block, text: rest });
+      return;
+    }
+  }
+
   const bulletItems = splitBulletItems(normalizedText).map((item) => normalizeTechnicalText(item));
   if (bulletItems.length > 0) {
+    // Check if the last bullet item ends with a separate section heading
+    const lastItem = bulletItems[bulletItems.length - 1];
+    let trailingHeading = "";
+    for (const heading of SECTION_HEADING_ORDER) {
+      const headingRegex = new RegExp(`\\s+(${escapeRegExp(heading)})$`, "i");
+      const match = lastItem.match(headingRegex);
+      if (match && match.index) {
+        bulletItems[bulletItems.length - 1] = lastItem.slice(0, match.index).trim();
+        trailingHeading = match[1];
+        break;
+      }
+    }
+
     content.push({
       type: "bulletList",
       content: bulletItems.map((item) => ({ type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: item }] }] }))
     });
+    if (trailingHeading) {
+      content.push(createHeadingNode(trailingHeading));
+    }
     return;
   }
 
   const normalizedBlock = { ...block, text: normalizedText };
-  const isRemoved = (block as any).cleanupDecision === "removed";
+  const isRemoved = (block as NormalizableTextBlock & { cleanupDecision?: string }).cleanupDecision === "removed";
+  if (isRemoved && !isSectionHeading(normalizedText)) return;
+
   if (isLikelyHeading(normalizedBlock)) {
     const node = createHeadingNode(normalizedText, headingLevel(normalizedBlock));
-    if (isRemoved) node.attrs = { ...(node.attrs as Record<string, unknown> | undefined), class: "extracted-removed", sourceId: block.id };
     content.push(node);
     return;
   }
 
-  const paraNode: Record<string, unknown> = { type: "paragraph", content: [{ type: "text", text: normalizedText }] };
-  if (isRemoved) paraNode.attrs = { class: "extracted-removed", sourceId: block.id };
-  content.push(paraNode);
+  content.push({ type: "paragraph", content: [{ type: "text", text: normalizedText }] });
 }
 
 function appendTable(content: Array<Record<string, unknown>>, table: NormalizableTable) {
@@ -437,6 +498,12 @@ function classifyImage(page: NormalizablePage, image: NormalizableImage, pageCou
   if (repeated && region === "footer") reasons.push("REPEATED_FOOTER_IMAGE");
   if (smallBrandingCandidate) reasons.push("POSSIBLE_SOURCE_LOGO");
   if (likelySupplierLogo) reasons.push("FIRST_PAGE_LOGO");
+
+  const isVectorDiagram = image.id.startsWith("vector-diagram") || image.storageKey?.includes("vector-diagram");
+  if (isVectorDiagram && page.tables.length > 0) {
+    reasons.push("MANUAL_REMOVED");
+    return { image, decision: "removed", reasons, confidence: 0.98 };
+  }
 
   if (reasons.length > 0) {
     const confidence = likelySupplierLogo || repeated ? 0.84 : 0.58;
@@ -784,11 +851,11 @@ function normalizeProductCode(value: string) {
   const text = String(value ?? "").toUpperCase().replace(/[,_]/g, " ").replace(/\s+/g, " ").trim();
   // Prefer strict pattern matches first — allow any Unicode letters so non-ASCII
   // product codes (e.g. leading Cyrillic) are preserved.
-  const strictMatches = Array.from(text.matchAll(/\p{L}{1,8}\d[\p{L}0-9-]{2,}/gu)).map((m) => m[0]);
+  const strictMatches = Array.from(text.matchAll(/(?:\d{1,4})?\p{L}{1,8}\d[\p{L}0-9-]{2,}/gu)).map((m) => m[0]);
   if (strictMatches.length > 0) return Array.from(new Set(strictMatches)).join(" / ");
 
   // Fallback: collect tokens that contain both letters and digits (allow slashes and hyphens)
-  const tokens = text.split(/[^\p{L}0-9\/ -]+/gu).map((t) => t.trim()).filter(Boolean);
+  const tokens = text.split(/[^\p{L}0-9/ -]+/gu).map((t) => t.trim()).filter(Boolean);
   const candidates = tokens.filter((t) => /\p{L}/u.test(t) && /\d/.test(t) && t.length >= 3);
   if (candidates.length > 0) return Array.from(new Set(candidates)).join(" / ");
   return "";
@@ -808,13 +875,52 @@ function collectSuppressedTableTextIds(page: NormalizablePage) {
     const pageArea = page.width * page.height;
     const tableAreaRatio = (tableBox.width * tableBox.height) / pageArea;
 
+    const tableCellTexts = rows.flatMap((row) =>
+      row.map((cell) => normalizeTechnicalText(cell.text.trim()).toLowerCase()).filter(Boolean)
+    );
+    const tableWords = new Set(
+      tableCellTexts.flatMap((t) => t.replace(/[^\p{L}0-9]/gu, " ").split(/\s+/).filter((w) => w.length >= 1))
+    );
+
     for (const block of page.textBlocks) {
+      if (isSectionHeading(block.text)) continue;
+
+      // If block starts with a Note definition (e.g. "Note 1:", "Notes:"), protect it from table suppression
+      if (isNoteText(block.text)) continue;
+
+      // If a block begins with table data but ends with a footnote definition, trim the table data from it
+      const trailingNoteMatch = block.text.match(/\b(Notes?\s*(?:\d+[:.]|:)\s*[A-Z].*)/is);
+      if (trailingNoteMatch?.[1] && trailingNoteMatch.index && trailingNoteMatch.index > 5) {
+        block.text = trailingNoteMatch[1].trim();
+        continue;
+      }
+
+      // Check text overlap with table content (suppresses extracted text blocks that duplicate table data)
+      const blockWords = normalizeTechnicalText(block.text)
+        .toLowerCase()
+        .replace(/[^\p{L}0-9]/gu, " ")
+        .split(/\s+/)
+        .filter((w) => w.length >= 1);
+      const matched = blockWords.length > 0 ? blockWords.filter((w) => tableWords.has(w)).length : 0;
+      if (blockWords.length > 0) {
+        if (matched / blockWords.length >= 0.55) {
+          ids.add(block.id);
+          continue;
+        }
+      }
+
       // quick reject if no bbox overlap at all
       if (!rectsIntersect(block.boundingBox, tableBox)) continue;
 
+      // Do not geometrically suppress if table bbox covers most of the page (> 60% area)
+      if (tableAreaRatio > 0.6) continue;
+
+      // If the block words have zero match with table cells, it does not belong to the table
+      if (blockWords.length >= 2 && matched === 0) continue;
+
       const headingAboveTable = isLikelyHeading(block)
         && block.boundingBox.y + block.boundingBox.height <= tableBox.y + Math.max(14, tableBox.height * 0.12);
-      if (isSectionHeading(block.text) || headingAboveTable) continue;
+      if (headingAboveTable) continue;
 
       // If the extracted table covers most of the page, don't let its aggregate bbox
       // suppress nearby headings/paragraphs unless the block clearly sits inside a
@@ -982,8 +1088,8 @@ function inferTableHeadingFromRows(table: NormalizableTable) {
   if (!text) return "";
   if (/ABSOLUTE|RATING|STORAGE|POWER DISSIPATION|JUNCTION TEMPERATURE/.test(text)) return "ABSOLUTE MAXIMUM RATINGS";
   if (/RECOMMENDED|OPERATING CONDITIONS|INPUT VOLTAGE|AMBIENT TEMPERATURE/.test(text)) return "RECOMMENDED OPERATING CONDITIONS";
-  if (/PAD|COORDINATE|LOCATION|X\s+Y|BOND PAD/.test(text)) return "PAD LOCATION AND COORDINATES";
-  if (/ASSEMBLY|SUBSTRATE|DIE ATTACH|WIRE BOND|BACKSIDE/.test(text)) return "ASSEMBLY CHARACTERISTICS";
+  if (/ASSEMBLY|WAFER|SCRIBE STREET|DIE ATTACH|WIRE BOND|BACKSIDE/.test(text)) return "ASSEMBLY CHARACTERISTICS";
+  if (/PAD LOCATION|PAD CENTERS|COORDINATE|\bX\s+Y\b/.test(text)) return "PAD LOCATION AND COORDINATES";
   if (/MIN|TYP|MAX|TEST CONDITIONS|OUTPUT VOLTAGE|GROUND CURRENT|DROPOUT|FLAG OUTPUT|ENABLE INPUT/.test(text)) return "ELECTRICAL CHARACTERISTICS";
   return "";
 }
@@ -1007,8 +1113,16 @@ function attachLooseNotesToElectricalCharacteristics(known: Map<string, Array<Re
   if (!electrical?.length) return;
 
   for (const [heading, nodes] of known.entries()) {
-    if (heading === "ELECTRICAL CHARACTERISTICS" || nodes.length <= 1) continue;
+    if (
+      heading === "ELECTRICAL CHARACTERISTICS" ||
+      heading === "PAD LOCATION AND COORDINATES" ||
+      heading === "ASSEMBLY CHARACTERISTICS" ||
+      nodes.length <= 1
+    ) {
+      continue;
+    }
     const moved = nodes.slice(1).filter((node) => isNoteText(nodePlainText(node)));
+
     if (moved.length === 0) continue;
     known.set(heading, [nodes[0], ...nodes.slice(1).filter((node) => !isNoteText(nodePlainText(node)))]);
     known.set("ELECTRICAL CHARACTERISTICS", [...electrical, ...moved]);
@@ -1021,22 +1135,26 @@ function compareTables(left: NormalizableTable, right: NormalizableTable) {
   return leftBox.y - rightBox.y || leftBox.x - rightBox.x;
 }
 
-function orderTextBlocksForPage(page: NormalizablePage) {
-  const bodyBlocks = page.textBlocks.filter((block) => pageRegion(page, block.boundingBox) === "body");
+function orderTextBlocksForPage(page: NormalizablePage, suppressedIds: Set<string> = new Set()) {
+  const bodyBlocks = page.textBlocks.filter((block) => pageRegion(page, block.boundingBox) === "body" && !suppressedIds.has(block.id));
   if (!isTwoColumnLayout(page, bodyBlocks)) return [...page.textBlocks].sort(compareBlocks);
 
+  const narrow = bodyBlocks.filter((block) => !isWideBlock(page, block.boundingBox));
+  const columnBottomY = Math.max(0, ...narrow.map((b) => b.boundingBox.y + b.boundingBox.height));
+
   return [...page.textBlocks].sort((a, b) => {
-    const aBucket = blockBucket(page, a);
-    const bBucket = blockBucket(page, b);
+    const aBucket = blockBucket(page, a, columnBottomY);
+    const bBucket = blockBucket(page, b, columnBottomY);
     if (aBucket !== bBucket) return aBucket - bBucket;
     return compareBlocks(a, b);
   });
 }
 
-function blockBucket(page: NormalizablePage, block: NormalizableTextBlock) {
+function blockBucket(page: NormalizablePage, block: NormalizableTextBlock, columnBottomY = Number.POSITIVE_INFINITY) {
   const region = pageRegion(page, block.boundingBox);
   if (region === "header") return 0;
-  if (region === "footer") return 4;
+  if (region === "footer") return 5;
+  if (block.boundingBox.y >= columnBottomY - 15) return 4;
   if (isWideBlock(page, block.boundingBox)) return 1;
   return block.boundingBox.x + block.boundingBox.width / 2 < page.width / 2 ? 2 : 3;
 }
@@ -1203,11 +1321,28 @@ function splitBulletItems(value: string) {
   return [];
 }
 
+function looksLikeDataRowOrFormula(text: string): boolean {
+  // Headings do not contain note references like (Note 2), (Notes 1, 9)
+  if (/\(Notes?\s*[\d,\s]+\)/i.test(text)) return true;
+  // Test conditions like =26V, =0.8V, =10mA
+  if (/=\s*\d+(?:\.\d+)?\s*[A-Za-z\u03a9\u00b5°]/.test(text)) return true;
+  // Mathematical formulas and component equations like R1 = R2(...), PD = IOUT(...)
+  if (/[=<>]\s*\(|^\w+(?:\s+\w+)?\s*=\s*\w+/i.test(text)) return true;
+  if (/[\u0394\u03b4]\s*[A-Za-z]|[\u0394\u03b4][A-Za-z]/.test(text)) return true;
+  // Units of measurement with numbers like 0.1 nA/°C, 250uA, 1.5A
+  if (/\b\d+(?:\.\d+)?\s*(?:mA|uA|\u00b5A|nA|mV|kV|pF|nF|uF|\u00b5F|mF|k\u03a9|M\u03a9|\u03a9|Hz|kHz|MHz|GHz|ns|us|\u00b5s|nA\/[°\u00b0]C|\u00b5A\/[°\u00b0]C)\b/i.test(text)) return true;
+  // Multiple standalone decimal or integer numbers separated by spaces (column values like 0.01 1.00 2.00, 30 600 750)
+  if (/(?:^|\s)\d+(?:\.\d+)?\s+\d+(?:\.\d+)?(?:\s+\d+(?:\.\d+)?)?(?:\s|$)/.test(text)) return true;
+  return false;
+}
+
+
 function isLikelyHeading(block: NormalizableTextBlock) {
   const text = normalizeTechnicalText(block.text.trim());
   if (!text || text.length > 120) return false;
   if (isSectionHeading(text)) return true;
   if (isNoteText(text)) return false;
+  if (looksLikeDataRowOrFormula(text)) return false;
 
   // Word/letter heuristics should be Unicode-aware. Use Unicode letter classes
   // to compute an uppercase ratio where applicable. For scripts without case
@@ -1232,6 +1367,8 @@ function isLikelyHeading(block: NormalizableTextBlock) {
 
   return (
     block.type === "heading" ||
+    isSectionHeading(text) ||
+    (text.endsWith(":") && wordCount <= 6 && !looksLikeDataRowOrFormula(text)) ||
     casedScriptEvidence ||
     uncasedScriptEvidence ||
     (standalone && largeFont) ||
@@ -1325,6 +1462,12 @@ function repairSectionAssignments(known: Map<string, Array<Record<string, unknow
   );
   moveMismatchedSectionNodes(
     known,
+    "PAD LOCATION AND COORDINATES",
+    "ASSEMBLY CHARACTERISTICS",
+    (text) => /\b(assembly|wafer|scribe street|chip size|die attach|bond pad metal|composition|circuit under pad)\b/i.test(text),
+  );
+  moveMismatchedSectionNodes(
+    known,
     "ELECTRICAL CHARACTERISTICS",
     "ASSEMBLY CHARACTERISTICS",
     (text) => /\b(assembly|substrate|die attach|wire bond|backside|process)\b/i.test(text),
@@ -1349,6 +1492,11 @@ function normalizeSectionListContent(known: Map<string, Array<Record<string, unk
     };
 
     for (const node of nodes.slice(1)) {
+      if (String(node.type ?? "") === "image") {
+        flushList();
+        retained.push(node);
+        continue;
+      }
       const text = nodePlainText(node);
       if (!text) continue;
       if (String(node.type ?? "") === "bulletList") {
@@ -1469,18 +1617,43 @@ function nodePlainText(node: Record<string, unknown>): string {
 
 function finalizeEditorContent(nodes: Array<Record<string, unknown>>) {
   const result: Array<Record<string, unknown>> = [];
-  let previousHeading = "";
+  const seenSectionHeadings = new Set<string>();
+  const seenNonSectionHeadings = new Set<string>();
+
   for (const node of nodes) {
-    const text = nodePlainText(node);
-    if (/^Image from source page \d+$/i.test(text)) continue;
-    const heading = sectionHeadingForNode(node);
-    if (heading) {
-      if (heading === previousHeading) continue;
-      previousHeading = heading;
+    if (String(node.type ?? "") === "pageBreak") {
       result.push(node);
       continue;
     }
-    if (text) previousHeading = "";
+    const text = nodePlainText(node);
+    if (!text && String(node.type ?? "") !== "image" && String(node.type ?? "") !== "horizontalRule") continue;
+    if (/^Image from source page \d+$/i.test(text)) continue;
+
+    // Filter out stray page numbers or footer URLs that slipped through
+    if (String(node.type ?? "") === "paragraph") {
+      if (isPageNumber(text)) continue;
+      if ((hasUrl(text) || hasRevisionOrDate(text)) && /vzpp|mikron|datasheet/i.test(text)) continue;
+    }
+
+    // Filter out nodes explicitly marked as removed
+    if ((node.attrs as Record<string, unknown> | undefined)?.class === "extracted-removed") continue;
+
+    const heading = sectionHeadingForNode(node);
+    if (heading) {
+      if (seenSectionHeadings.has(heading)) continue;
+      seenSectionHeadings.add(heading);
+      result.push(node);
+      continue;
+    }
+
+    if (String(node.type ?? "") === "heading") {
+      const normalizedH = text.toUpperCase();
+      // Drop repeated product title headers like "CW29150R-XX... Low-Dropout Regulators"
+      if (looksLikeSupplierProductHeader(text) && seenNonSectionHeadings.has(normalizedH)) continue;
+      if (seenNonSectionHeadings.has(normalizedH) && normalizedH.includes("LOW-DROPOUT REGULATORS")) continue;
+      seenNonSectionHeadings.add(normalizedH);
+    }
+
     result.push(node);
   }
   return result;

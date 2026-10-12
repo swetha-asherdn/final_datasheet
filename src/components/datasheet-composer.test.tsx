@@ -13,7 +13,7 @@ const initialBundle = {
     title: "Generic Datasheet",
     productCode: "VS123",
     productCategory: "Regulator",
-    editorJson: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Editable body" }] }] },
+    editorJson: { type: "doc", content: [{ type: "paragraph", attrs: null as Record<string, unknown> | null, content: [{ type: "text", text: "Editable body", marks: undefined as Array<{ type: string; attrs?: Record<string, unknown> | null }> | undefined }] }] },
     sourceCleanupReport: {
       removedTextBlocks: [
         { id: "text:1:h", itemType: "text", pageNumber: 1, text: "SOURCE HEADER", confidence: 0.86, reasons: ["REPEATED_HEADER_TEXT"], decision: "removed" },
@@ -270,12 +270,21 @@ describe("DatasheetComposer", () => {
       },
     };
 
-    const patchPayloads: any[] = [];
+    const patchPayloads: Array<Record<string, unknown>> = [];
     const defaultFetchMock = fetchMock.getMockImplementation();
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url.endsWith("/api/projects/project-1/datasheet/create")) {
         return jsonResponse(mappedBundle, 201);
+      }
+      if (url.endsWith("/api/projects/project-1/datasheet/template")) {
+        return jsonResponse({
+          ...mappedBundle,
+          template: {
+            ...mappedBundle.template,
+            productCode: "VS-CW29150R-XX / VS-CW29150R-ADJ / VS-CW29151R-XX",
+          },
+        }, 200);
       }
       if (url.endsWith("/api/projects/project-1/datasheet") && init?.method === "PATCH") {
         const payload = JSON.parse(String(init.body ?? "{}"));
@@ -299,22 +308,21 @@ describe("DatasheetComposer", () => {
     await act(async () => {
       (mappingSummary as HTMLElement).click();
     });
-    await flush();
-
-    const confirmButtons = Array.from(container.querySelectorAll("button")).filter((node) => node.textContent?.includes("Confirm"));
-    expect(confirmButtons.length).toBeGreaterThan(0);
     await act(async () => {
-      (confirmButtons[0] as HTMLButtonElement).click();
+      await new Promise((r) => setTimeout(r, 100));
     });
     await flush();
 
-    const applyButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Apply confirmed mappings"));
-    expect(applyButton).toBeTruthy();
-    await act(async () => {
-      (applyButton as HTMLButtonElement).click();
-    });
-    await flush();
+    // Verify Auto Approval starts ON by default (Issue 3)
+    const autoApproveToggle = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Auto Approval:"));
+    expect(autoApproveToggle?.textContent).toContain("Auto Approval: ON");
 
+    // Verify compact summary renders the detected codes with checkmark (Issue 3)
+    expect(container.textContent).toContain("CW29150R-XX");
+    expect(container.textContent).toContain("VS-CW29150R-XX");
+    expect(container.textContent).toContain("✓");
+
+    // Click Save to verify explicit save succeeds with the mapped payload (Issue 2)
     const saveButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Save"));
     expect(saveButton).toBeTruthy();
     await act(async () => {
@@ -324,7 +332,8 @@ describe("DatasheetComposer", () => {
 
     expect(patchPayloads.length).toBeGreaterThan(0);
     const mappedPayload = patchPayloads.find((payload) => {
-      const text = payload.editorJson?.content?.flatMap((node: any) => node.content ?? []).map((item: any) => item.text).join(" ") ?? "";
+      const doc = payload.editorJson as { content?: Array<{ content?: Array<{ text?: string }> }> } | undefined;
+      const text = doc?.content?.flatMap((node) => node.content ?? []).map((item) => item.text ?? "").join(" ") ?? "";
       return text.includes("VS-CW29150R-XX");
     });
     expect(mappedPayload).toBeTruthy();
@@ -332,6 +341,180 @@ describe("DatasheetComposer", () => {
       "/api/projects/project-1/datasheet",
       expect.objectContaining({ method: "PATCH" }),
     );
+  });
+
+  it("keeps mappings pending when Auto Approval is OFF and applies replacement only when Confirm is clicked", async () => {
+    const mappedBundle = {
+      ...initialBundle,
+      document: {
+        ...initialBundle.document,
+        productCode: "CW29150R-XX",
+        editorJson: {
+          type: "doc",
+          content: [{
+            type: "paragraph",
+            content: [{ type: "text", text: "CW29150R-XX" }],
+          }],
+        },
+      },
+    };
+
+    let currentBundle = { ...mappedBundle };
+    const defaultFetchMock = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/api/projects/project-1/datasheet/create")) {
+        currentBundle = { ...mappedBundle };
+        return jsonResponse(currentBundle, 201);
+      }
+      if (url.endsWith("/api/projects/project-1/datasheet/template")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        currentBundle = {
+          ...currentBundle,
+          template: {
+            ...currentBundle.template,
+            ...payload,
+          },
+        };
+        return jsonResponse(currentBundle, 200);
+      }
+      if (url.endsWith("/api/projects/project-1/datasheet") && init?.method === "PATCH") {
+        const payload = JSON.parse(String(init.body ?? "{}"));
+        currentBundle = {
+          ...currentBundle,
+          document: {
+            ...currentBundle.document,
+            ...payload,
+            lastSavedAt: new Date().toISOString(),
+          },
+        };
+        return jsonResponse(currentBundle, 200);
+      }
+      return defaultFetchMock ? defaultFetchMock(input, init) : jsonResponse({ ok: true }, 200);
+    });
+
+    await createDatasheet();
+
+    const mappingSummary = Array.from(container.querySelectorAll("summary")).find((node) => node.textContent?.includes("Supplier Product Code Mapping"));
+    expect(mappingSummary).toBeTruthy();
+    await act(async () => {
+      (mappingSummary as HTMLElement).click();
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+    });
+    await flush();
+
+    // Toggle Auto Approval from ON to OFF
+    const autoApproveToggle = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Auto Approval:"));
+    expect(autoApproveToggle?.textContent).toContain("Auto Approval: ON");
+    await act(async () => {
+      (autoApproveToggle as HTMLElement).click();
+    });
+    await flush();
+
+    // Verify Auto Approval is OFF and mappings are Pending
+    expect(autoApproveToggle?.textContent).toContain("Auto Approval: OFF");
+    expect(container.textContent).toContain("Auto approval is OFF");
+    expect(container.textContent).toContain("Status: pending");
+
+    // Click Confirm on the mapping to approve and apply
+    const confirmButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.trim() === "Confirm");
+    expect(confirmButton).toBeTruthy();
+    await act(async () => {
+      (confirmButton as HTMLButtonElement).click();
+    });
+    await flush();
+
+    // Verify mapping is now applied
+    expect(container.textContent).toContain("Status: applied");
+  });
+
+  it("reverts document back to normal when Auto Approval is turned OFF, allows editing replacement code, and applies confirmed mappings", async () => {
+    const mappedBundle = {
+      ...initialBundle,
+      document: {
+        ...initialBundle.document,
+        productCode: "CW29150R-XX",
+        editorJson: {
+          type: "doc",
+          content: [{
+            type: "paragraph",
+            content: [{ type: "text", text: "The VS-CW29150R-XX is a low dropout regulator." }],
+          }],
+        },
+      },
+    };
+
+    let currentBundle = { ...mappedBundle };
+    const defaultFetchMock = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/api/projects/project-1/datasheet/create")) {
+        currentBundle = { ...mappedBundle };
+        return jsonResponse(currentBundle, 201);
+      }
+      if (url.endsWith("/api/projects/project-1/datasheet/template")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        currentBundle = {
+          ...currentBundle,
+          template: {
+            ...currentBundle.template,
+            ...payload,
+          },
+        };
+        return jsonResponse(currentBundle, 200);
+      }
+      if (url.endsWith("/api/projects/project-1/datasheet") && init?.method === "PATCH") {
+        const payload = JSON.parse(String(init.body ?? "{}"));
+        currentBundle = {
+          ...currentBundle,
+          document: {
+            ...currentBundle.document,
+            ...payload,
+            lastSavedAt: new Date().toISOString(),
+          },
+        };
+        return jsonResponse(currentBundle, 200);
+      }
+      return defaultFetchMock ? defaultFetchMock(input, init) : jsonResponse({ ok: true }, 200);
+    });
+
+    await createDatasheet();
+
+    const mappingSummary = Array.from(container.querySelectorAll("summary")).find((node) => node.textContent?.includes("Supplier Product Code Mapping"));
+    expect(mappingSummary).toBeTruthy();
+    await act(async () => {
+      (mappingSummary as HTMLElement).click();
+    });
+    await flush();
+
+    // Toggle Auto Approval from ON to OFF
+    const autoApproveToggle = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Auto Approval:"));
+    expect(autoApproveToggle?.textContent).toContain("Auto Approval: ON");
+    await act(async () => {
+      (autoApproveToggle as HTMLElement).click();
+    });
+    await flush();
+
+    // Verify Auto Approval is OFF
+    expect(autoApproveToggle?.textContent).toContain("Auto Approval: OFF");
+    // Verify document was reverted back to normal original supplier code
+    expect((currentBundle.document.editorJson?.content?.[0]?.content?.[0] as { text: string })?.text).toContain("CW29150R-XX");
+    expect((currentBundle.document.editorJson?.content?.[0]?.content?.[0] as { text: string })?.text).not.toContain("VS-CW29150R-XX");
+
+    // The Apply confirmed mappings button should be present and enabled for pending mappings
+    const applyAllButton = Array.from(container.querySelectorAll("button")).find((node) => node.textContent?.includes("Apply confirmed mappings"));
+    expect(applyAllButton).toBeTruthy();
+    expect((applyAllButton as HTMLButtonElement).disabled).toBe(false);
+
+    // Click Apply confirmed mappings
+    await act(async () => {
+      (applyAllButton as HTMLButtonElement).click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Status: applied");
   });
 
   it("keeps generated datasheet list spacing compact in editor CSS", () => {

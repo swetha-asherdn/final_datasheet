@@ -1,5 +1,7 @@
+import fs from "fs";
+import path from "path";
 import { describe, expect, it } from "vitest";
-import { applySupplierProductCodeMappings, autoApproveSupplierCodeMappings, detectSupplierProductCodes } from "@/lib/supplier-product-code-mapping";
+import { applySupplierProductCodeMappings, autoApproveSupplierCodeMappings, detectSupplierProductCodes, revertSupplierProductCodeMappings, type SupplierCodeMapping } from "@/lib/supplier-product-code-mapping";
 import { buildSuggestedSupplierMappings, detectSupplierProductCodesFromEditorJson } from "@/lib/supplier-product-code-mapping";
 
 describe("supplier product code mapping", () => {
@@ -203,15 +205,19 @@ describe("supplier product code mapping", () => {
     expect(confirmed).toBeTruthy();
 
     // If not confirmed by heuristic, force-confirm for the purpose of testing apply
-    const toApply = (confirmed?.status === "confirmed") ? [confirmed] : [{ ...(confirmed as any), status: "confirmed" }];
+    const toApply: SupplierCodeMapping[] = (confirmed?.status === "confirmed")
+      ? [confirmed]
+      : confirmed
+        ? [{ ...confirmed, status: "confirmed" as const }]
+        : [];
 
     // 5) Apply confirmed mappings and verify replacements and idempotency
     const originalText = page.text;
-    const applyResult = applySupplierProductCodeMappings({ text: originalText, mappings: toApply as any });
+    const applyResult = applySupplierProductCodeMappings({ text: originalText, mappings: toApply });
     expect(applyResult.replacedCount).toBeGreaterThanOrEqual(1);
     expect(applyResult.text.includes("VS-XYZ-999")).toBe(true);
     // 7) Running replacement again is idempotent
-    const second = applySupplierProductCodeMappings({ text: applyResult.text, mappings: toApply as any });
+    const second = applySupplierProductCodeMappings({ text: applyResult.text, mappings: toApply });
     expect(second.replacedCount).toBe(0);
     expect(second.text).toBe(applyResult.text);
 
@@ -234,8 +240,8 @@ describe("supplier product code mapping", () => {
 
     // TO-220 may be detected as a candidate, but it must NOT be auto-approved
     if (codes.includes("TO-220")) {
-      const suggested = buildSuggestedSupplierMappings(candidates as any);
-      const auto = autoApproveSupplierCodeMappings(suggested as any);
+      const suggested = buildSuggestedSupplierMappings(candidates);
+      const auto = autoApproveSupplierCodeMappings(suggested);
       const to220 = auto.find((s) => s.supplierCode === "TO-220");
       expect(to220).toBeTruthy();
       // auto-approve should not confirm a package token
@@ -243,15 +249,70 @@ describe("supplier product code mapping", () => {
 
       // Applying only auto-approved mappings should not replace TO-220
       const confirmed = auto.filter((m) => m.status === "confirmed");
-      const applyResult = applySupplierProductCodeMappings({ text: page.text, mappings: confirmed as any });
+      const applyResult = applySupplierProductCodeMappings({ text: page.text, mappings: confirmed });
       expect(applyResult.text.includes("TO-220")).toBe(true);
     }
   });
 
   it("mapping logic contains no CW-specific hardcoded strings", () => {
-    const fs = require("fs");
-    const path = require("path");
     const file = fs.readFileSync(path.join(__dirname, "./supplier-product-code-mapping.ts"), "utf8");
     expect(file.includes("CW29150R")).toBe(false);
   });
+
+  it("produces an accurate ReplacementReport tracking attempted, successful, keptOriginal, and warnings", () => {
+    const mappings: SupplierCodeMapping[] = [
+      { id: "m1", supplierCode: "LM7805", velloreCode: "VS-LM7805", pageNumber: 1, section: "title", confidence: 0.95, status: "confirmed" },
+      { id: "m2", supplierCode: "ABC1234", velloreCode: "VS-ABC1234", pageNumber: 1, section: "body", confidence: 0.5, status: "pending" },
+    ];
+
+    const input = "Using LM7805 regulator alongside ABC1234 module.";
+    const result = applySupplierProductCodeMappings({ text: input, mappings });
+
+    expect(result.report).toBeDefined();
+    expect(result.report.attempted).toBe(2);
+    expect(result.report.successful).toBe(1);
+    expect(result.report.keptOriginal).toBe(1);
+    expect(result.report.failed).toBe(0);
+    expect(result.text).toBe("Using VS-LM7805 regulator alongside ABC1234 module.");
+    expect(result.report.warnings.some((w) => w.includes("ABC1234") && w.includes("retained"))).toBe(true);
+  });
+
+  it("never deletes a product code or outputs blank spaces when replacement is unconfirmed or fails", () => {
+    const mappings: SupplierCodeMapping[] = [
+      { id: "m1", supplierCode: "CW29150R-ADJ", velloreCode: "VS-CW29150R-ADJ", pageNumber: 1, section: "body", confidence: 0.4, status: "ignored" },
+    ];
+
+    const input = "The CW29150R-ADJ is high current...";
+    const result = applySupplierProductCodeMappings({ text: input, mappings });
+
+    expect(result.text).toBe("The CW29150R-ADJ is high current...");
+    expect(result.text).not.toContain("The  is high current...");
+  });
+
+  it("reverts previously replaced Vellore codes back to original supplier codes cleanly", () => {
+    const mappings: SupplierCodeMapping[] = [
+      { id: "m1", supplierCode: "LM7805-XX", velloreCode: "VS-LM7805-XX", pageNumber: 1, section: "title", confidence: 0.95, status: "applied" },
+      { id: "m2", supplierCode: "LM7805-ADJ", velloreCode: "VS-LM7805-ADJ", pageNumber: 1, section: "body", confidence: 0.9, status: "applied" },
+    ];
+
+    const textWithVellore = "The VS-LM7805-XX and VS-LM7805-ADJ are high current regulators.";
+    const reverted = revertSupplierProductCodeMappings({ text: textWithVellore, mappings });
+
+    expect(reverted.replacedCount).toBe(2);
+    expect(reverted.text).toBe("The LM7805-XX and LM7805-ADJ are high current regulators.");
+  });
+
+  it("allows re-applying updated Vellore code when user changes the replacement code", () => {
+    const mappings: SupplierCodeMapping[] = [
+      { id: "m1", supplierCode: "LM7805-XX", velloreCode: "VSs-LM7805-XX", pageNumber: 1, section: "title", confidence: 0.95, status: "confirmed" },
+    ];
+
+    const textWithOldVellore = "The VS-LM7805-XX is high current regulator.";
+    const result = applySupplierProductCodeMappings({ text: textWithOldVellore, mappings });
+
+    expect(result.replacedCount).toBe(1);
+    expect(result.text).toBe("The VSs-LM7805-XX is high current regulator.");
+  });
 });
+
+

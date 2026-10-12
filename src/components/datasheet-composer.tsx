@@ -17,25 +17,51 @@ import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
 import { EditorContent, useEditor, type JSONContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { ArrowDown, ArrowUp, Bold, Bot, Download, ExternalLink, Eye, EyeOff, FileDown, FilePlus2, Heading1, Heading2, ImageIcon, Italic, List, ListOrdered, Maximize2, Plus, RefreshCcw, Save, Sparkles, SplitSquareVertical, SubscriptIcon, SuperscriptIcon, Table2, Trash, UnderlineIcon, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Bold, Bot, Check, Download, ExternalLink, Eye, EyeOff, FileDown, FilePlus2, Heading1, Heading2, ImageIcon, Italic, List, ListOrdered, Maximize2, Plus, RefreshCcw, Save, Sparkles, SplitSquareVertical, SubscriptIcon, SuperscriptIcon, Table2, Trash, UnderlineIcon, X } from "lucide-react";
 import { ExtractionReview } from "@/components/extraction-review";
 import type { ProjectStatus } from "@/lib/project-status";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { replaceProductCodeTokens, type ProductCodeReplacementMode } from "@/lib/product-code-replacement";
-import { applySupplierProductCodeMappings, autoApproveSupplierCodeMappings, buildSuggestedSupplierMappings, detectSupplierProductCodesFromEditorJson, type SupplierCodeMapping } from "@/lib/supplier-product-code-mapping";
+import {
+  replaceProductCodeTokens,
+  findProductCodeOccurrences,
+  type ProductCodeReplacementMode,
+} from "@/lib/product-code-replacement";
+import {
+  applySupplierProductCodeMappings,
+  autoApproveSupplierCodeMappings,
+  buildSuggestedSupplierMappings,
+  detectAppliedSupplierProductCodesFromEditorJson,
+  detectSupplierProductCodesFromEditorJson,
+  isTextContainingSupplierCode,
+  revertSupplierProductCodeMappings,
+  type SupplierCodeMapping,
+  type ReplacementReport,
+} from "@/lib/supplier-product-code-mapping";
+import { ProductCodeMappingPanel } from "@/components/product-code-mapping-panel";
 
-type ComposerTab = "extraction" | "editor" | "paged-layout" | "paged-preview" | "template" | "cleanup" | "export";
+type ComposerTab = "extraction" | "mapping" | "editor" | "paged-layout" | "paged-preview" | "template" | "cleanup" | "export";
 type CleanupFilter = "all" | "removed-text" | "removed-images" | "uncertain" | "restored";
 type CleanupItem = { id: string; itemType: "text" | "image"; pageNumber: number; text?: string; storageKey?: string; confidence: number; reasons: string[]; decision: string };
 type CleanupReport = { removedTextBlocks: CleanupItem[]; removedImages: CleanupItem[]; uncertainItems: CleanupItem[]; confidence: number; reasonCodes: string[] };
-type DatasheetDocument = { id: string; status: string; title: string; productCode: string; productCategory: string; editorJson: JSONContent; sourceCleanupReport: CleanupReport; lastSavedAt: string };
+type DatasheetDocument = {
+  id: string;
+  status: string;
+  title: string;
+  productCode: string;
+  productCategory: string;
+  editorJson: JSONContent;
+  sourceCleanupReport: CleanupReport;
+  supplierCodeMappings?: SupplierCodeMapping[];
+  latestReplacementReport?: ReplacementReport;
+  lastSavedAt: string;
+};
 type TemplateSettings = { id: string; logoAssetPath: string; companyName: string; website: string; productCode: string; productTitle: string; documentStatus: string; revision: string; layoutMode: "two-column" | "single-column"; layoutDensity: "comfortable" | "technical-dense"; pageFillStrategy: "safe" | "balanced" | "aggressive"; primaryColor: string; accentColor: string; footerText: string; showPageNumbers: boolean };
 type DatasheetQualitySummary = { sectionsDetected: number; tablesDetected: number; figuresDetected: number; warningsCount: number; unresolvedSymbolsCount: number; warnings?: string[] };
 type DatasheetBundle = { document: DatasheetDocument; template: TemplateSettings; qualitySummary?: DatasheetQualitySummary };
-type DatasheetLayoutExportMode = "auto" | "saved";
+type DatasheetLayoutExportMode = "direct" | "auto" | "saved";
 type DatasheetLayoutBlock = {
   id: string;
   sourceBlockId?: string | null;
@@ -70,7 +96,18 @@ type DatasheetLayoutBlock = {
 type DatasheetLayoutPage = { pageNumber: number; usedHeight: number; bodyHeight: number; warnings: string[]; blocks: DatasheetLayoutBlock[] };
 type DatasheetLayout = { id: string; projectId: string; datasheetDocumentId: string; exportMode: DatasheetLayoutExportMode; templateSnapshot: Pick<TemplateSettings, "logoAssetPath" | "companyName" | "website" | "productCode" | "productTitle" | "documentStatus" | "revision" | "layoutMode" | "layoutDensity" | "pageFillStrategy" | "primaryColor" | "accentColor">; pages: DatasheetLayoutPage[]; warnings: string[]; lastGeneratedAt: string; lastSavedAt: string; updatedAt: string };
 type LayoutLoadState = "idle" | "loading" | "ready" | "missing" | "failed";
-type DatasheetExport = { id: string; status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED"; filename: string; fileSize: number | null; errorMessage: string | null; completedAt: string | null; createdAt: string; downloadUrl: string | null };
+type DatasheetExport = {
+  id: string;
+  status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED";
+  filename: string;
+  fileSize: number | null;
+  errorMessage: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  downloadUrl: string | null;
+  exportMode?: string;
+  replacementReport?: ReplacementReport | null;
+};
 type SaveState = "idle" | "saving" | "saved" | "failed";
 type ExportState = "idle" | "loading" | "exporting" | "failed";
 type ApiErrorBody = { error?: { message?: string; code?: string; details?: unknown } };
@@ -241,13 +278,56 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
   const [hasUnsavedEditorChanges, setHasUnsavedEditorChanges] = useState(false);
   const [hasUnsavedTemplateChanges, setHasUnsavedTemplateChanges] = useState(false);
   const [previewVersion, setPreviewVersion] = useState(0);
-  const [previewMode, setPreviewMode] = useState<DatasheetLayoutExportMode>("auto");
-  const [exportMode, setExportMode] = useState<DatasheetLayoutExportMode>("auto");
+  const [previewMode, setPreviewMode] = useState<DatasheetLayoutExportMode>("direct");
+  const [exportMode, setExportMode] = useState<DatasheetLayoutExportMode>("direct");
+  const [supplierMappings, setSupplierMappings] = useState<SupplierCodeMapping[]>([]);
   const [notice, setNotice] = useState<Notice>(null);
   const [isPending, startTransition] = useTransition();
   const canCreate = status === "REVIEW_REQUIRED";
   const canRegenerate = Boolean(bundle);
   const hasUnsavedChanges = hasUnsavedEditorChanges || hasUnsavedTemplateChanges;
+
+  useEffect(() => {
+    if (bundle?.document) {
+      if (bundle.document.supplierCodeMappings && bundle.document.supplierCodeMappings.length > 0) {
+        setSupplierMappings(bundle.document.supplierCodeMappings);
+      } else if (bundle.document.editorJson) {
+        const candidates = detectSupplierProductCodesFromEditorJson(bundle.document.editorJson);
+        const suggested = buildSuggestedSupplierMappings(candidates);
+        setSupplierMappings(suggested);
+      }
+    }
+  }, [bundle?.document.id, bundle?.document.supplierCodeMappings]);
+
+  function updateSupplierCodeMapping(id: string, patch: Partial<SupplierCodeMapping>) {
+    setSupplierMappings((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+    setHasUnsavedEditorChanges(true);
+  }
+
+  function autoGenerateSupplierCodeMappings() {
+    if (!bundle) return;
+    const candidates = detectSupplierProductCodesFromEditorJson(bundle.document.editorJson);
+    const suggested = buildSuggestedSupplierMappings(candidates);
+    setSupplierMappings(suggested);
+    setHasUnsavedEditorChanges(true);
+  }
+
+  function confirmAllSupplierCodeMappings() {
+    setSupplierMappings((prev) =>
+      prev.map((m) => (m.status === "ignored" ? m : { ...m, status: "confirmed" }))
+    );
+    setHasUnsavedEditorChanges(true);
+  }
+
+  async function applyAndSaveSupplierCodeMappings() {
+    if (!bundle) return;
+    const ok = await saveDocument({
+      supplierCodeMappings: supplierMappings,
+    });
+    if (ok) {
+      setNotice({ tone: "success", text: "Product code mappings saved successfully." });
+    }
+  }
 
   useEffect(() => {
     void loadDatasheet();
@@ -256,15 +336,15 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
   useEffect(() => {
     if (loadState === "ready" && bundle) {
       if (["REVIEW_REQUIRED", "COMPLETED"].includes(status) && tab === "extraction") {
-        setTab("export");
+        setTab(status === "COMPLETED" ? "export" : "mapping");
       }
       void loadLayout();
       return;
     }
     setLayout(null);
     setLayoutState("idle");
-    setPreviewMode("auto");
-    setExportMode("auto");
+    setPreviewMode("direct");
+    setExportMode("direct");
   }, [bundle?.document.id, loadState, projectId, status, tab]);
 
   async function loadDatasheet() {
@@ -368,7 +448,12 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
   async function saveDocument(input: Partial<DatasheetDocument>) {
     setSaveState("saving");
     setSaveError(null);
-    const safeInput = input.editorJson ? { ...input, editorJson: sanitizeEditorJsonForSave(input.editorJson as JSONContent) } : input;
+    const safeInput = input.editorJson ? { ...input, editorJson: sanitizeEditorJsonForSave(input.editorJson as JSONContent) } : { ...input };
+    if (typeof safeInput.productCode === "string" && safeInput.productCode.includes("/")) {
+      const parts = safeInput.productCode.split(/\s*[/,]\s*/).map((p) => p.trim()).filter(Boolean);
+      const uniqueParts = Array.from(new Set(parts));
+      safeInput.productCode = uniqueParts.join(" / ").slice(0, 280);
+    }
     console.info("[DatasheetComposer] PATCH payload", JSON.stringify(safeInput, null, 2));
     const response = await fetch(`/api/projects/${projectId}/datasheet`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(safeInput) });
     if (!response.ok) {
@@ -528,6 +613,7 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
       <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-2">
         <div className="flex flex-wrap gap-2">
           <TabButton active={tab === "extraction"} onClick={() => setTab("extraction")}>Extraction Review</TabButton>
+          <TabButton active={tab === "mapping"} onClick={() => setTab("mapping")} disabled={!bundle}>Product Code Mapping</TabButton>
           <TabButton active={tab === "editor"} onClick={() => setTab("editor")} disabled={!bundle}>Datasheet Editor</TabButton>
           <TabButton active={tab === "paged-layout"} onClick={() => setTab("paged-layout")} disabled={!bundle}>Paged Layout Editor</TabButton>
           <TabButton active={tab === "paged-preview"} onClick={() => setTab("paged-preview")} disabled={!bundle}>Paged Preview</TabButton>
@@ -547,6 +633,17 @@ export function DatasheetComposer({ projectId, status, originalPdfUrl }: { proje
       {tab !== "extraction" && loadState === "loading" ? <ComposerState label="Loading editable datasheet..." /> : null}
       {tab !== "extraction" && loadState === "missing" ? <CreateDatasheetPanel canCreate={canCreate} isPending={isPending} onCreate={createDatasheet} /> : null}
       {tab !== "extraction" && loadState === "failed" ? <ComposerState label="Datasheet composer could not be loaded." /> : null}
+      {tab === "mapping" && bundle ? (
+        <ProductCodeMappingPanel
+          mappings={supplierMappings}
+          report={bundle.document.latestReplacementReport}
+          onUpdateMapping={updateSupplierCodeMapping}
+          onAutoGenerate={autoGenerateSupplierCodeMappings}
+          onConfirmAll={confirmAllSupplierCodeMappings}
+          onApplyAndSave={applyAndSaveSupplierCodeMappings}
+          isSaving={saveState === "saving"}
+        />
+      ) : null}
       {tab === "editor" && bundle ? <DatasheetEditor projectId={projectId} bundle={bundle} saveState={saveState} saveError={saveError} onDirtyChange={setHasUnsavedEditorChanges} onTemplateDirtyChange={setHasUnsavedTemplateChanges} onSave={saveDocument} onTemplateSave={saveTemplate} onOpenPagedLayout={() => setTab("paged-layout")} onRegenerate={regenerateDatasheet} onSwitchToExtraction={() => setTab("extraction")} /> : null}
       {tab === "paged-layout" && bundle ? <PagedLayoutEditorPanel bundle={bundle} layout={layout} layoutState={layoutState} layoutSaveState={layoutSaveState} layoutError={layoutError} hasUnsavedChanges={hasUnsavedChanges} onGenerate={() => generateLayout()} onSave={(nextLayout) => persistLayoutPatch({ pages: nextLayout.pages, warnings: nextLayout.warnings, exportMode: nextLayout.exportMode })} onReset={resetLayout} onModeChange={applyExportMode} /> : null}
       {tab === "paged-preview" && bundle ? <PagedPreviewPanel projectId={projectId} bundle={bundle} previewVersion={previewVersion} hasUnsavedChanges={hasUnsavedChanges} previewMode={previewMode} layoutState={layoutState} onModeChange={applyExportMode} onGenerateLayout={() => generateLayout()} onRefresh={() => setPreviewVersion((current) => current + 1)} /> : null}
@@ -846,17 +943,44 @@ function DatasheetEditor({ projectId, bundle, saveState, saveError, onDirtyChang
         </CardHeader>
         <CardContent className="space-y-3">
           <EditorToolbar projectId={projectId} editor={editor} selectedBlock={selectedBlock} onMutate={markEditorDirty} onOpenPagedLayout={onOpenPagedLayout} />
-          <CodeReplacePanel editor={editor} onMutate={markEditorDirty} />
+          <CodeReplacePanel
+            editor={editor}
+            editorDoc={editorDoc}
+            productCode={productCode}
+            onMutate={markEditorDirty}
+            onUpdateProductCode={async (nextProductCode: string) => {
+              const parts = nextProductCode.split(/\s*[/,]\s*/).map((p) => p.trim()).filter(Boolean);
+              const uniqueCode = Array.from(new Set(parts)).join(" / ").slice(0, 280);
+              setProductCode(uniqueCode);
+              await onSave({ title, productCode: uniqueCode, productCategory, editorJson: ensureEditorJsonHasBlockIds(editor?.getJSON() ?? editorDoc), status: "EDITING" });
+              await onTemplateSave({ productCode: uniqueCode });
+              setPreviewVersion((v) => v + 1);
+            }}
+          />
           <SupplierCodeMappingPanel
             editor={editor}
             editorDoc={editorDoc}
             onMutate={markEditorDirty}
             productCode={productCode}
             onPreviewRefresh={() => setPreviewVersion((v) => v + 1)}
+            onSaveDocument={async (patch: { editorJson?: JSONContent; productCode?: string }) => {
+              const nextJson = patch.editorJson ? ensureEditorJsonHasBlockIds(patch.editorJson) : (editor ? ensureEditorJsonHasBlockIds(editor.getJSON()) : editorDoc);
+              const nextCode = patch.productCode ? patch.productCode.trim() : productCode;
+              if (patch.productCode) setProductCode(nextCode);
+              setEditorDoc(nextJson);
+              const success = await onSave({ title, productCode: nextCode, productCategory, editorJson: nextJson, status: "EDITING" });
+              if (patch.productCode && nextCode !== bundle.template.productCode) {
+                await onTemplateSave({ productCode: nextCode });
+              }
+              setPreviewVersion((v) => v + 1);
+              return success;
+            }}
             onUpdateProductCode={async (nextProductCode: string) => {
-              setProductCode(nextProductCode);
-              await onSave({ title, productCode: nextProductCode, productCategory, editorJson: ensureEditorJsonHasBlockIds(editor?.getJSON() ?? editorDoc), status: "EDITING" });
-              await onTemplateSave({ productCode: nextProductCode } as any);
+              const parts = nextProductCode.split(/\s*[/,]\s*/).map((p) => p.trim()).filter(Boolean);
+              const uniqueCode = Array.from(new Set(parts)).join(" / ").slice(0, 280);
+              setProductCode(uniqueCode);
+              await onSave({ title, productCode: uniqueCode, productCategory, editorJson: ensureEditorJsonHasBlockIds(editor?.getJSON() ?? editorDoc), status: "EDITING" });
+              await onTemplateSave({ productCode: uniqueCode });
               setPreviewVersion((v) => v + 1);
             }}
           />
@@ -1163,9 +1287,18 @@ function ExportPanel({ exports, exportState, exportError, hasUnsavedChanges, exp
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <CardTitle>Branded PDF Export</CardTitle>
-            <p className="mt-1 text-sm text-muted-foreground">Generate a Vellore Semicon PDF from the saved editable datasheet and template.</p>
+            <p className="mt-1 text-sm text-muted-foreground">Generate a Vellore Semicon PDF with layout-preserving vector branding or HTML reconstruction.</p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant={exportMode === "direct" ? "default" : "outline"}
+              size="sm"
+              onClick={() => void onModeChange("direct")}
+              className={exportMode === "direct" ? "bg-violet-600 hover:bg-violet-700 text-white" : ""}
+            >
+              Direct Vector Rebrand (Recommended)
+            </Button>
             <Button type="button" variant={exportMode === "auto" ? "default" : "outline"} size="sm" onClick={() => void onModeChange("auto")}>Export auto flow</Button>
             <Button type="button" variant={exportMode === "saved" ? "default" : "outline"} size="sm" onClick={() => void onModeChange("saved")}>Export saved layout</Button>
             <Button type="button" variant="outline" onClick={() => void onRefresh()} disabled={isExporting}><RefreshCcw size={15} />Refresh</Button>
@@ -1174,7 +1307,9 @@ function ExportPanel({ exports, exportState, exportError, hasUnsavedChanges, exp
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        <p className="rounded-md bg-slate-50 p-3 text-sm text-muted-foreground">Current export mode: {exportMode === "saved" ? "Saved layout" : "Auto flow"}.</p>
+        <p className="rounded-md bg-slate-50 p-3 text-sm text-muted-foreground">
+          Current export mode: {exportMode === "saved" ? "Saved layout" : exportMode === "direct" ? "Layout-Preserving Rebrand (Direct Vector)" : "Auto flow"}.
+        </p>
         {hasUnsavedChanges ? <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-800">Save changes to update preview/export.</p> : null}
         {exportMode === "saved" && layoutState === "missing" ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-dashed p-3 text-sm text-muted-foreground"><span>Generate and save a paged layout before exporting with saved layout mode.</span><Button type="button" variant="outline" size="sm" onClick={() => void onGenerateLayout()}>Generate paged layout</Button></div> : null}
         {exportError ? <p className="rounded-md bg-red-50 p-3 text-sm text-red-700">{exportError}</p> : null}
@@ -1187,14 +1322,71 @@ function ExportPanel({ exports, exportState, exportError, hasUnsavedChanges, exp
 }
 
 function ExportHistoryRow({ item }: { item: DatasheetExport }) {
+  const [showWarnings, setShowWarnings] = useState(false);
+  const rep = item.replacementReport;
   return (
-    <div className="flex flex-col gap-3 rounded-md border bg-white p-3 md:flex-row md:items-center md:justify-between">
-      <div>
-        <p className="font-medium">{item.filename}</p>
-        <p className="text-sm text-muted-foreground">{item.status} - {item.completedAt ? new Date(item.completedAt).toLocaleString() : new Date(item.createdAt).toLocaleString()}{item.fileSize ? ` - ${formatBytes(item.fileSize)}` : ""}</p>
+    <div className="flex flex-col gap-3 rounded-md border bg-white p-3 md:flex-row md:items-center md:justify-between shadow-xs">
+      <div className="space-y-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="font-medium text-slate-900">{item.filename}</p>
+          {item.exportMode ? (
+            <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${item.exportMode === "direct" ? "bg-violet-100 text-violet-700 border border-violet-200" : "bg-slate-100 text-slate-700"}`}>
+              {item.exportMode === "direct" ? "Direct Vector" : item.exportMode}
+            </span>
+          ) : null}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {item.status} - {item.completedAt ? new Date(item.completedAt).toLocaleString() : new Date(item.createdAt).toLocaleString()}{item.fileSize ? ` - ${formatBytes(item.fileSize)}` : ""}
+        </p>
         {item.errorMessage ? <p className="mt-1 text-sm text-red-700">{item.errorMessage}</p> : null}
+
+        {rep ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+            <span className="rounded bg-blue-50 px-2 py-0.5 text-blue-700 font-medium border border-blue-200">
+              Attempted: {rep.attempted}
+            </span>
+            <span className="rounded bg-emerald-50 px-2 py-0.5 text-emerald-700 font-medium border border-emerald-200">
+              Successful: {rep.successful}
+            </span>
+            <span className="rounded bg-amber-50 px-2 py-0.5 text-amber-700 font-medium border border-amber-200">
+              Kept Original: {rep.keptOriginal}
+            </span>
+            {rep.failed > 0 ? (
+              <span className="rounded bg-red-50 px-2 py-0.5 text-red-700 font-medium border border-red-200">
+                Failed: {rep.failed}
+              </span>
+            ) : null}
+            {rep.warnings && rep.warnings.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => setShowWarnings(!showWarnings)}
+                className="text-[11px] text-amber-700 underline font-medium hover:text-amber-900 ml-1"
+              >
+                {showWarnings ? "Hide warnings" : `View ${rep.warnings.length} warning(s)`}
+              </button>
+            ) : null}
+            {showWarnings && rep.warnings && rep.warnings.length > 0 ? (
+              <div className="w-full mt-1 rounded bg-amber-50/70 p-2 text-[10px] text-amber-900 border border-amber-200">
+                <ul className="list-disc pl-4 space-y-0.5">
+                  {rep.warnings.map((w, idx) => (
+                    <li key={`rep-w-${idx}`}>{w}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
-      {item.downloadUrl ? <Button type="button" asChild><a href={item.downloadUrl}><Download size={15} />Download PDF</a></Button> : null}
+      <div className="flex shrink-0 items-center gap-2">
+        {item.downloadUrl ? (
+          <Button type="button" size="sm" asChild>
+            <a href={item.downloadUrl}>
+              <Download size={14} className="mr-1" />
+              Download PDF
+            </a>
+          </Button>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -1287,24 +1479,131 @@ function replaceInJsonContent(node: JSONContent, pattern: string, replacement: s
   return { node, count, warnings };
 }
 
-function CodeReplacePanel({ editor, onMutate }: { editor: Editor | null; onMutate: (nextJson?: JSONContent) => void }) {
+function revertSupplierCodeMappingsInJsonContent(node: JSONContent, mappings: SupplierCodeMapping[]): { node: JSONContent; count: number } {
+  let count = 0;
+
+  if (node.type === "text" && typeof node.text === "string") {
+    const res = revertSupplierProductCodeMappings({ text: node.text, mappings });
+    return {
+      node: res.replacedCount > 0 ? { ...node, text: res.text } : node,
+      count: res.replacedCount,
+    };
+  }
+
+  if (Array.isArray(node.content)) {
+    const newContent = node.content.map((child) => {
+      const res = revertSupplierCodeMappingsInJsonContent(child, mappings);
+      count += res.count;
+      return res.node;
+    });
+
+    return {
+      node: count > 0 ? { ...node, content: newContent } : node,
+      count,
+    };
+  }
+
+  return { node, count: 0 };
+}
+
+function CodeReplacePanel({
+  editor,
+  editorDoc,
+  productCode,
+  onMutate,
+  onUpdateProductCode,
+}: {
+  editor: Editor | null;
+  editorDoc?: JSONContent;
+  productCode?: string;
+  onMutate: (nextJson?: JSONContent) => void;
+  onUpdateProductCode?: (nextProductCode: string) => Promise<void> | void;
+}) {
   const [find, setFind] = useState("");
   const [replaceTo, setReplaceTo] = useState("");
   const [mode, setMode] = useState<CodeMatchMode>("starts-with");
   const [lastResult, setLastResult] = useState<{ count: number; find: string; warning?: string | null } | null>(null);
   const [open, setOpen] = useState(false);
 
+  // Unified effective text across document body and header
+  const effectiveText = useMemo(() => {
+    const bodyText = extractPlainTextFromJson(editorDoc ?? editor?.getJSON());
+    const headerText = productCode ? ` ${productCode}` : "";
+    return `${bodyText}${headerText}`;
+  }, [editor, editorDoc, productCode]);
+
+  // Live occurrences check
+  const occurrences = useMemo(() => {
+    if (!find.trim()) return null;
+    return findProductCodeOccurrences({
+      text: effectiveText,
+      find: find.trim(),
+      mode,
+    });
+  }, [effectiveText, find, mode]);
+
   function handleReplace() {
     if (!editor || !find.trim()) return;
     const pattern = find.trim();
     const replacement = replaceTo.trim();
+
+    if (!replacement) {
+      if (occurrences?.unreplacedCount && occurrences.unreplacedCount > 0) {
+        setLastResult({
+          count: 0,
+          find: pattern,
+          warning: `Found ${occurrences.unreplacedCount} occurrence(s) of "${pattern}". Enter a replacement code to replace them.`,
+        });
+      } else if (occurrences?.alreadyReplacedCount && occurrences.alreadyReplacedCount > 0) {
+        setLastResult({
+          count: 0,
+          find: pattern,
+          warning: `All ${occurrences.alreadyReplacedCount} occurrence(s) are already replaced with ${occurrences.alreadyReplacedTokens.join(", ")}.`,
+        });
+      } else {
+        setLastResult({
+          count: 0,
+          find: pattern,
+          warning: `No occurrences of "${pattern}" found in current document.`,
+        });
+      }
+      return;
+    }
+
     const currentJson = editor.getJSON() as JSONContent;
-    const { node: newJson, count, warnings } = replaceInJsonContent(currentJson, pattern, replacement, mode);
-    if (count > 0) {
+    const { node: newJson, count: bodyCount, warnings } = replaceInJsonContent(currentJson, pattern, replacement, mode);
+
+    let headerReplaced = false;
+    if (productCode && onUpdateProductCode) {
+      const headerRes = replaceProductCodeTokens({
+        text: productCode,
+        find: pattern,
+        replaceWith: replacement,
+        mode,
+      });
+      if (headerRes.replacedCount > 0 && headerRes.text !== productCode) {
+        headerReplaced = true;
+        void onUpdateProductCode(headerRes.text);
+      }
+    }
+
+    const totalCount = bodyCount + (headerReplaced ? 1 : 0);
+
+    if (totalCount > 0) {
       editor.commands.setContent(newJson, { emitUpdate: false });
       onMutate(newJson);
+      setLastResult({ count: totalCount, find: pattern, warning: null });
+    } else {
+      setLastResult({
+        count: 0,
+        find: pattern,
+        warning:
+          warnings[0] ??
+          (occurrences?.alreadyReplacedCount
+            ? `All ${occurrences.alreadyReplacedCount} occurrence(s) are already replaced with ${occurrences.alreadyReplacedTokens.join(", ")}.`
+            : `No occurrences of "${pattern}" found.`),
+      });
     }
-    setLastResult({ count, find: pattern, warning: warnings[0] ?? null });
   }
 
   const modeLabels: Record<CodeMatchMode, string> = {
@@ -1321,7 +1620,7 @@ function CodeReplacePanel({ editor, onMutate }: { editor: Editor | null; onMutat
         <span className="ml-auto text-[10px] font-normal text-amber-600">{open ? "▲ collapse" : "▼ expand"}</span>
       </summary>
       <div className="px-4 pb-4 pt-2 space-y-3">
-        <p className="text-[11px] text-amber-700 leading-snug">Replace product codes in the document body. Words are matched individually so codes embedded in paragraphs are found correctly.</p>
+        <p className="text-[11px] text-amber-700 leading-snug">Replace product codes in the document body and header. Searches use the same verified product-code extraction data as mapping.</p>
         <div className="flex flex-wrap gap-2">
           <div className="flex flex-col gap-1 flex-1 min-w-[160px]">
             <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Match mode</label>
@@ -1361,7 +1660,7 @@ function CodeReplacePanel({ editor, onMutate }: { editor: Editor | null; onMutat
             <Input
               value={replaceTo}
               onChange={(e) => { setReplaceTo(e.target.value); setLastResult(null); }}
-              placeholder={mode === "starts-with" ? "e.g. V-CW29150R" : mode === "ends-with" ? "e.g. -ADJ" : "e.g. V-CW29150R-XX"}
+              placeholder={mode === "starts-with" ? "e.g. VS-CW29150R" : mode === "ends-with" ? "e.g. -ADJ" : "e.g. VS-CW29150R-XX"}
               className="h-8 text-xs font-mono"
             />
           </div>
@@ -1375,6 +1674,40 @@ function CodeReplacePanel({ editor, onMutate }: { editor: Editor | null; onMutat
             Replace All
           </Button>
         </div>
+
+        {occurrences && occurrences.find ? (
+          <div className="flex flex-wrap items-center gap-2 text-[11px] pt-0.5">
+            {occurrences.isUnsafe ? (
+              <span className="inline-flex items-center gap-1.5 rounded border border-amber-300 bg-amber-100/80 px-2 py-0.5 font-medium text-amber-900">
+                ⚠️ {occurrences.unsafeWarning ?? `"${occurrences.find}" is too generic to be safely replaced.`}
+              </span>
+            ) : occurrences.unreplacedCount > 0 ? (
+              <div className="flex items-center justify-between w-full rounded border border-blue-200 bg-blue-50/80 px-2.5 py-1 text-blue-900">
+                <span className="flex items-center gap-1.5 font-medium">
+                  🔍 Found {occurrences.unreplacedCount} unreplaced occurrence{occurrences.unreplacedCount === 1 ? "" : "s"}: <span className="font-mono font-semibold">{occurrences.unreplacedTokens.join(", ")}</span>
+                </span>
+                {!replaceTo.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => setReplaceTo(`VS-${occurrences.find}`)}
+                    className="text-[10px] text-blue-700 underline hover:text-blue-900"
+                  >
+                    Suggest: VS-{occurrences.find}
+                  </button>
+                )}
+              </div>
+            ) : occurrences.alreadyReplacedCount > 0 ? (
+              <span className="inline-flex items-center gap-1.5 rounded border border-emerald-300 bg-emerald-50 px-2.5 py-1 text-emerald-800">
+                ✓ Already applied as <span className="font-mono font-semibold">{occurrences.alreadyReplacedTokens.join(", ")}</span> ({occurrences.alreadyReplacedCount} occurrence{occurrences.alreadyReplacedCount === 1 ? "" : "s"} present)
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-50 px-2 py-0.5 text-slate-600">
+                No occurrences of &quot;{occurrences.find}&quot; found in document body or header.
+              </span>
+            )}
+          </div>
+        ) : null}
+
         {lastResult !== null ? (
           <>
             <p className={`text-[11px] font-medium ${ lastResult.count > 0 ? "text-emerald-700" : "text-slate-500" }`}>
@@ -1384,7 +1717,6 @@ function CodeReplacePanel({ editor, onMutate }: { editor: Editor | null; onMutat
                   ? lastResult.warning
                   : `No occurrences of "${lastResult.find}" found.`}
             </p>
-            {lastResult.warning && lastResult.count === 0 ? <p className="text-[10px] text-amber-700">Replacement was skipped to avoid partial or unsafe product-code matches.</p> : null}
           </>
         ) : null}
       </div>
@@ -1392,11 +1724,32 @@ function CodeReplacePanel({ editor, onMutate }: { editor: Editor | null; onMutat
   );
 }
 
-function SupplierCodeMappingPanel({ editor, editorDoc, onMutate, productCode, onPreviewRefresh, onUpdateProductCode }: { editor: Editor | null; editorDoc: JSONContent; onMutate: (nextJson?: JSONContent) => void; productCode: string; onPreviewRefresh?: () => void; onUpdateProductCode: (nextProductCode: string) => Promise<void> | void }) {
+function SupplierCodeMappingPanel({
+  editor,
+  editorDoc,
+  onMutate,
+  productCode,
+  onPreviewRefresh,
+  onSaveDocument,
+  onUpdateProductCode,
+  initialAutoApprove = true,
+}: {
+  editor: Editor | null;
+  editorDoc: JSONContent;
+  onMutate: (nextJson?: JSONContent) => void;
+  productCode: string;
+  onPreviewRefresh?: () => void;
+  onSaveDocument?: (patch: { editorJson?: JSONContent; productCode?: string }) => Promise<boolean>;
+  onUpdateProductCode?: (nextProductCode: string) => Promise<void> | void;
+  initialAutoApprove?: boolean;
+}) {
   const [mappings, setMappings] = useState<SupplierCodeMapping[]>([]);
   const [result, setResult] = useState<{ count: number; warnings: string[]; message: string } | null>(null);
-  const [open, setOpen] = useState(false);
-  const [autoApprove, setAutoApprove] = useState(false);
+  const [open, setOpen] = useState(true);
+  const [autoApprove, setAutoApprove] = useState(initialAutoApprove);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const autoAppliedBatchRef = useRef<string>("");
+  const ignoredCodesRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!editorDoc) {
@@ -1406,21 +1759,60 @@ function SupplierCodeMappingPanel({ editor, editorDoc, onMutate, productCode, on
 
     const currentText = extractPlainTextFromJson(editorDoc);
     const detected = buildSuggestedSupplierMappings(detectSupplierProductCodesFromEditorJson(editorDoc));
+    const appliedDetected = detectAppliedSupplierProductCodesFromEditorJson(editorDoc);
+
+    const appliedMappings: SupplierCodeMapping[] = appliedDetected
+      .filter((app) => !detected.some((d) => d.supplierCode.toLowerCase() === app.supplierCode.toLowerCase()))
+      .map((app, idx) => ({
+        id: `applied-${app.supplierCode}-${idx}`,
+        supplierCode: app.supplierCode,
+        velloreCode: app.velloreCode,
+        pageNumber: app.pageNumber,
+        section: app.section,
+        confidence: 0.99,
+        status: "applied" as const,
+      }));
+
     const nextMappings = detected.map((mapping) => {
+      const codeKey = mapping.supplierCode.toUpperCase();
+      const isIgnored = ignoredCodesRef.current.has(codeKey);
+      const prev = mappings.find(
+        (m) => m.id === mapping.id || m.supplierCode.toUpperCase() === codeKey
+      );
+
+      if (isIgnored || prev?.status === "ignored") {
+        ignoredCodesRef.current.add(codeKey);
+        return {
+          ...mapping,
+          status: "ignored" as const,
+        };
+      }
+      if (prev?.status === "confirmed") {
+        return {
+          ...mapping,
+          status: "confirmed" as const,
+        };
+      }
       const stillPresent = isTextContainingSupplierCode(currentText, mapping.supplierCode);
       return {
         ...mapping,
-        status: stillPresent ? "pending" : "applied",
+        status: stillPresent ? ("pending" as const) : ("applied" as const),
       };
     });
-    setMappings(nextMappings);
+
+    setMappings([...nextMappings, ...appliedMappings]);
   }, [editorDoc]);
 
   useEffect(() => {
     if (!autoApprove || !editor || mappings.length === 0) return;
-    const nextMappings = autoApproveSupplierCodeMappings(mappings, 0.8);
-    if (JSON.stringify(nextMappings.map((m) => ({ id: m.id, status: m.status }))) !== JSON.stringify(mappings.map((m) => ({ id: m.id, status: m.status })))) {
-      setMappings(nextMappings);
+    const nonIgnored = mappings.filter((m) => !ignoredCodesRef.current.has(m.supplierCode.toUpperCase()) && m.status !== "ignored");
+    const nextMappings = autoApproveSupplierCodeMappings(nonIgnored, 0.8);
+    const merged = mappings.map((m) => {
+      const found = nextMappings.find((nm) => nm.id === m.id);
+      return found ? found : m;
+    });
+    if (JSON.stringify(merged.map((m) => ({ id: m.id, status: m.status }))) !== JSON.stringify(mappings.map((m) => ({ id: m.id, status: m.status })))) {
+      setMappings(merged);
     }
   }, [autoApprove, editor, mappings]);
 
@@ -1428,42 +1820,77 @@ function SupplierCodeMappingPanel({ editor, editorDoc, onMutate, productCode, on
     setMappings((current) => current.map((item) => (item.id === id ? { ...item, ...next } : item)));
   }
 
-  function extractPlainTextFromJson(node: JSONContent | unknown): string {
-    if (!node || typeof node !== "object") return "";
-    const record = node as Record<string, unknown>;
-    const parts: string[] = [];
+  async function handleToggleIgnoreMapping(mapping: SupplierCodeMapping) {
+    const codeKey = mapping.supplierCode.toUpperCase();
+    const isCurrentlyIgnored = mapping.status === "ignored" || ignoredCodesRef.current.has(codeKey);
 
-    if (typeof record.text === "string") {
-      parts.push(record.text);
+    if (isCurrentlyIgnored) {
+      ignoredCodesRef.current.delete(codeKey);
+      setMappings((current) =>
+        current.map((item) =>
+          item.id === mapping.id || item.supplierCode.toUpperCase() === codeKey
+            ? { ...item, status: "pending" as const }
+            : item
+        )
+      );
+      setResult({
+        count: 0,
+        warnings: [],
+        message: `Restored "${mapping.supplierCode}" to pending review.`,
+      });
+      return;
     }
 
-    if (Array.isArray(record.content)) {
-      for (const child of record.content) {
-        parts.push(extractPlainTextFromJson(child));
+    ignoredCodesRef.current.add(codeKey);
+    setMappings((current) =>
+      current.map((item) =>
+        item.id === mapping.id || item.supplierCode.toUpperCase() === codeKey
+          ? { ...item, status: "ignored" as const }
+          : item
+      )
+    );
+
+    if (editor) {
+      const currentJson = editor.getJSON() as JSONContent;
+      const { node: revertedJson, count } = revertSupplierCodeMappingsInJsonContent(currentJson, [mapping]);
+      if (count > 0) {
+        editor.commands.setContent(revertedJson, { emitUpdate: false });
+        onMutate(revertedJson);
+        if (onSaveDocument) {
+          await onSaveDocument({ editorJson: revertedJson });
+        }
       }
     }
 
-    return parts.join(" ");
+    setResult({
+      count: 0,
+      warnings: [],
+      message: `Ignored supplier code "${mapping.supplierCode}". It will not be replaced.`,
+    });
   }
 
-  function isTextContainingSupplierCode(text: string, supplierCode: string) {
-    if (!text || !supplierCode) return false;
-    const trimmed = supplierCode.trim();
-    if (!trimmed) return false;
-    const normalizedText = text.replace(/\s+/g, " ");
-    const normalizedCode = trimmed.replace(/\s+/g, "");
-    return normalizedText.includes(normalizedCode) || normalizedText.includes(normalizedCode.replace(/-/g, ""));
-  }
-
-  function applyConfirmedMappings({ updateHeader = false }: { updateHeader?: boolean } = {}) {
-    if (!editor || mappings.length === 0) return;
+  async function applyConfirmedMappings({
+    updateHeader = false,
+    overrideMappings,
+  }: {
+    updateHeader?: boolean;
+    overrideMappings?: SupplierCodeMapping[];
+  } = {}) {
+    const activeMappings = overrideMappings ?? mappings;
+    if (!editor || activeMappings.length === 0) return;
 
     const currentJson = editor.getJSON() as JSONContent;
     const currentText = extractPlainTextFromJson(currentJson);
     const staleIds = new Set<string>();
-    const confirmed = mappings.filter((mapping) => {
-      const isConfirmed = mapping.status === "confirmed";
-      const stillPresent = isTextContainingSupplierCode(currentText, mapping.supplierCode);
+    const confirmed = activeMappings.filter((mapping) => {
+      if (mapping.status === "ignored" || ignoredCodesRef.current.has(mapping.supplierCode.toUpperCase())) {
+        return false;
+      }
+      const isConfirmed = mapping.status === "confirmed" || (autoApprove && mapping.confidence >= 0.8);
+      const stillPresent =
+        isTextContainingSupplierCode(currentText, mapping.supplierCode) ||
+        currentText.toUpperCase().includes(`VS-${mapping.supplierCode.toUpperCase()}`) ||
+        (mapping.velloreCode && currentText.toUpperCase().includes(mapping.velloreCode.toUpperCase()));
       if (isConfirmed && !stillPresent) {
         staleIds.add(mapping.id);
       }
@@ -1471,57 +1898,146 @@ function SupplierCodeMappingPanel({ editor, editorDoc, onMutate, productCode, on
     });
 
     if (staleIds.size > 0) {
-      setMappings((current) => current.map((mapping) => staleIds.has(mapping.id) ? { ...mapping, status: "applied" } : mapping));
+      setMappings((current) => {
+        const base = overrideMappings ?? current;
+        return base.map((mapping) => (staleIds.has(mapping.id) ? { ...mapping, status: "applied" } : mapping));
+      });
     }
 
     if (confirmed.length === 0) {
-      setResult({
-        count: 0,
-        warnings: [],
-        message: staleIds.size > 0
-          ? "These supplier-code mappings were already applied or are no longer present in the current editor document."
-          : "No confirmed supplier-code mappings selected yet. Review the list and mark each row as confirmed before applying.",
-      });
+      const allApplied = activeMappings.every((m) => m.status === "applied" || !isTextContainingSupplierCode(currentText, m.supplierCode));
+      if (allApplied && activeMappings.length > 0) {
+        setResult({
+          count: 0,
+          warnings: [],
+          message: "All detected supplier product codes are already mapped and applied.",
+        });
+      } else {
+        setResult({
+          count: 0,
+          warnings: [],
+          message: staleIds.size > 0
+            ? "These supplier-code mappings were already applied or are no longer present in the current editor document."
+            : "No confirmed supplier-code mappings selected yet. Review the list and mark each row as confirmed before applying.",
+        });
+      }
       return;
     }
 
     const { node: newJson, count, warnings } = replaceSupplierCodeMappingsInJsonContent(currentJson, confirmed);
+
+    // Deduplicate unique Vellore codes to prevent productCode bloat
+    const uniqueVelloreCodes = Array.from(new Set(confirmed.map((m) => m.velloreCode.trim()).filter(Boolean)));
+    const headerValue = uniqueVelloreCodes.join(" / ").slice(0, 280);
+
     if (count > 0) {
       editor.commands.setContent(newJson, { emitUpdate: false });
       onMutate(newJson);
+
+      if (onSaveDocument) {
+        const nextCode = updateHeader && headerValue && headerValue !== productCode ? headerValue : undefined;
+        await onSaveDocument({
+          editorJson: newJson,
+          productCode: nextCode,
+        });
+      } else if (updateHeader && headerValue && productCode && productCode !== headerValue && onUpdateProductCode) {
+        void onUpdateProductCode(headerValue);
+      }
+
       if (onPreviewRefresh) {
         onPreviewRefresh();
       }
 
-      if (updateHeader) {
-        const headerValue = confirmed
-          .map((mapping) => mapping.velloreCode)
-          .filter(Boolean)
-          .join(" / ");
-        if (headerValue && productCode && productCode !== headerValue) {
-          void onUpdateProductCode(headerValue);
-        }
-      }
-
-      setMappings((current) => current.map((mapping) => confirmed.some((confirmedMapping) => confirmedMapping.id === mapping.id) ? { ...mapping, status: "applied" } : mapping));
-      setResult({ count, warnings, message: `Applied ${count} safe replacement${count === 1 ? "" : "s"} across ${confirmed.length} confirmed supplier-code mapping${confirmed.length === 1 ? "" : "s"}.` });
+      setMappings((current) => {
+        const base = overrideMappings ?? current;
+        return base.map((mapping) =>
+          confirmed.some((confirmedMapping) => confirmedMapping.id === mapping.id) ? { ...mapping, status: "applied" } : mapping
+        );
+      });
+      setResult({
+        count,
+        warnings,
+        message: `Applied ${count} safe replacement${count === 1 ? "" : "s"} across ${confirmed.length} confirmed supplier-code mapping${confirmed.length === 1 ? "" : "s"}.`,
+      });
       return;
     }
 
-    setResult({
-      count: 0,
-      warnings,
-      message: warnings[0] ?? "No safe replacements were applied. The detected supplier codes are ambiguous or not present in the current document body.",
-    });
+    if (warnings.length > 0) {
+      setResult({ count: 0, warnings, message: warnings[0] });
+    } else {
+      setResult({
+        count: 0,
+        warnings: [],
+        message: "All detected supplier product codes are already mapped and applied.",
+      });
+    }
   }
 
   useEffect(() => {
     if (!autoApprove || !editor || mappings.length === 0) return;
-    const toApply = mappings.filter((mapping) => mapping.status === "confirmed");
-    if (toApply.length > 0) {
-      applyConfirmedMappings({ updateHeader: true });
-    }
+    const toApply = mappings.filter((mapping) => mapping.status === "confirmed" && mapping.confidence >= 0.8);
+    if (toApply.length === 0) return;
+
+    const batchKey = toApply.map((m) => `${m.id}:${m.status}`).sort().join("|");
+    if (autoAppliedBatchRef.current === batchKey) return;
+    autoAppliedBatchRef.current = batchKey;
+
+    void applyConfirmedMappings({ updateHeader: true });
   }, [autoApprove, editor, mappings]);
+
+  async function handleToggleAutoApprove() {
+    if (autoApprove) {
+      setAutoApprove(false);
+      autoAppliedBatchRef.current = "";
+
+      // Revert any applied, confirmed, or detected mappings in the editor back to original supplier codes
+      if (editor && mappings.length > 0) {
+        const currentJson = editor.getJSON() as JSONContent;
+        const { node: revertedJson, count } = revertSupplierCodeMappingsInJsonContent(currentJson, mappings);
+        if (count > 0) {
+          editor.commands.setContent(revertedJson, { emitUpdate: false });
+          onMutate(revertedJson);
+        }
+
+        // Also revert document header productCode if it contains any Vellore codes
+        let revertedHeader = productCode;
+        for (const m of mappings) {
+          const vUpper = m.velloreCode.trim();
+          const sCode = m.supplierCode.trim();
+          if (vUpper && vUpper !== sCode) {
+            revertedHeader = revertedHeader.replace(new RegExp(vUpper.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), sCode);
+          }
+          if (revertedHeader.toUpperCase().includes(`VS-${sCode.toUpperCase()}`)) {
+            revertedHeader = revertedHeader.replace(new RegExp(`VS-${sCode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "gi"), sCode);
+          }
+        }
+
+        if (onSaveDocument) {
+          await onSaveDocument({
+            editorJson: count > 0 ? revertedJson : currentJson,
+            productCode: revertedHeader !== productCode ? revertedHeader : undefined,
+          });
+        } else if (revertedHeader !== productCode && onUpdateProductCode) {
+          void onUpdateProductCode(revertedHeader);
+        }
+
+        if (onPreviewRefresh) {
+          onPreviewRefresh();
+        }
+      }
+
+      // Keep mappings pending when Auto Approval is OFF so user can review/edit and confirm
+      setMappings((prev) =>
+        prev.map((m) => (m.status === "ignored" ? m : { ...m, status: "pending" as const }))
+      );
+      setResult(null);
+    } else {
+      setAutoApprove(true);
+      autoAppliedBatchRef.current = "";
+    }
+  }
+
+  const hasManualPending = mappings.some((m) => m.status === "confirmed" && (!autoApprove || m.confidence < 0.8));
 
   return (
     <details className="rounded-md border border-violet-200 bg-violet-50/70 text-xs" open={open} onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
@@ -1530,81 +2046,228 @@ function SupplierCodeMappingPanel({ editor, editorDoc, onMutate, productCode, on
         <span className="ml-auto text-[10px] font-normal text-violet-600">{open ? "▲ collapse" : "▼ expand"}</span>
       </summary>
       <div className="space-y-3 px-4 pb-4 pt-2">
-        <div className="flex items-center justify-between gap-2 rounded-md border border-violet-200 bg-white/60 p-2">
+        <div className="flex items-center justify-between gap-2 rounded-md border border-violet-200 bg-white/70 p-2">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-wide text-violet-700">Auto approval</p>
-            <p className="text-[10px] text-violet-600">When enabled, high-confidence mappings auto-confirm and apply automatically.</p>
+            <p className="text-[10px] text-violet-600">When enabled, safe detected supplier mappings automatically approve and apply.</p>
           </div>
           <button
             type="button"
-            onClick={() => setAutoApprove((current) => !current)}
-            className={`inline-flex items-center rounded-full border px-2 py-1 text-[10px] font-medium transition ${autoApprove ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white text-slate-600"}`}
+            onClick={() => void handleToggleAutoApprove()}
+            className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${autoApprove ? "border-emerald-500 bg-emerald-50 text-emerald-700 hover:bg-emerald-100" : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"}`}
           >
-            {autoApprove ? "ON" : "OFF"}
+            Auto Approval: {autoApprove ? "ON" : "OFF"}
           </button>
         </div>
-        <p className="text-[11px] text-violet-700 leading-snug">Review likely supplier product codes detected in the editor, edit the Vellore replacement code if needed, and confirm each mapping before applying exact safe replacements.</p>
-        {mappings.length === 0 ? (
-          <p className="rounded-md border border-dashed border-violet-200 bg-white/60 p-2 text-[11px] text-violet-700">No likely supplier-product-code matches were detected in the current editor content.</p>
-        ) : (
+
+        {autoApprove ? (
+          /* Compact Auto Approval View (Issue 3) */
           <div className="space-y-2">
-            {mappings.map((mapping, _idx) => (
-              <div key={`${mapping.id}-${_idx}`} className="rounded-md border border-violet-200 bg-white p-2 shadow-sm">
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-[11px] font-medium text-slate-700">
-                    <span className="rounded bg-violet-100 px-1.5 py-0.5 text-violet-700">{mapping.pageNumber}</span>
-                    <span>{mapping.section}</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <button
+            {mappings.length === 0 ? (
+              <p className="rounded-md border border-dashed border-violet-200 bg-white/60 p-2 text-[11px] text-violet-700">
+                No supplier-product-code matches detected in the current editor content.
+              </p>
+            ) : (
+              <div className="rounded-md border border-violet-200 bg-white p-2.5 shadow-2xs space-y-1.5">
+                <div className="flex items-center justify-between text-[11px] font-medium text-slate-600 mb-1 border-b pb-1">
+                  <span>Detected Code Mappings:</span>
+                  <span className="text-emerald-700 flex items-center gap-1 text-[10px] font-semibold">
+                    <Check size={12} className="text-emerald-600" /> Auto Approval: ON
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  {mappings.map((mapping) => {
+                    const isApplied = mapping.status === "applied";
+                    const isAmbiguous = !isApplied && mapping.confidence < 0.8;
+
+                    return (
+                      <div
+                        key={mapping.id}
+                        className={`flex flex-wrap items-center justify-between gap-2 rounded px-2.5 py-1 text-xs font-mono transition ${
+                          isApplied
+                            ? "border border-emerald-200 bg-emerald-50/60 text-slate-800"
+                            : isAmbiguous
+                            ? "border border-amber-300 bg-amber-50 text-amber-900"
+                            : "border border-slate-200 bg-slate-50 text-slate-800"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-slate-800">{mapping.supplierCode}</span>
+                          <span className="text-slate-400 font-sans">→</span>
+                          <span className="font-semibold text-emerald-700">{mapping.velloreCode}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 font-sans text-[11px]">
+                          {isApplied ? (
+                            <span className="flex items-center gap-1 text-emerald-700 font-medium">
+                              <Check size={13} className="text-emerald-600" /> ✓
+                            </span>
+                          ) : isAmbiguous ? (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] text-amber-700 font-medium">Requires review</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const nextMappings = mappings.map((m) =>
+                                    m.id === mapping.id ? { ...m, status: "confirmed" as const } : m
+                                  );
+                                  setMappings(nextMappings);
+                                  void applyConfirmedMappings({ updateHeader: true, overrideMappings: nextMappings });
+                                }}
+                                className="rounded bg-amber-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-amber-700"
+                              >
+                                Confirm
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="flex items-center gap-1 text-emerald-700 font-medium">
+                              <Check size={13} className="text-emerald-600" /> ✓
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {hasManualPending ? (
+                  <div className="pt-2 flex justify-end">
+                    <Button
                       type="button"
-                      onClick={() => updateMapping(mapping.id, { status: "confirmed" })}
-                      className={`rounded px-2 py-1 text-[10px] font-medium border ${mapping.status === "confirmed" ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white text-slate-600"}`}
+                      size="sm"
+                      className="bg-violet-600 hover:bg-violet-700 text-white h-7 text-xs"
+                      onClick={() => void applyConfirmedMappings({ updateHeader: true })}
                     >
-                      Confirm
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => updateMapping(mapping.id, { status: "ignored" })}
-                      className={`rounded px-2 py-1 text-[10px] font-medium border ${mapping.status === "ignored" ? "border-red-300 bg-red-50 text-red-700" : "border-slate-200 bg-white text-slate-600"}`}
-                    >
-                      Ignore
-                    </button>
+                      Apply confirmed mappings
+                    </Button>
                   </div>
-                </div>
-                <div className="grid gap-2 md:grid-cols-2">
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Supplier code</label>
-                    <Input value={mapping.supplierCode} readOnly className="h-8 text-xs font-mono bg-slate-50" />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Vellore code</label>
-                    <Input
-                      value={mapping.velloreCode}
-                      onChange={(e) => updateMapping(mapping.id, { velloreCode: e.target.value })}
-                      className="h-8 text-xs font-mono"
-                    />
-                  </div>
-                </div>
-                <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-500">
-                  <span>Confidence: {mapping.confidence.toFixed(2)}</span>
-                  <span className="capitalize">Status: {mapping.status}</span>
-                </div>
+                ) : null}
               </div>
-            ))}
+            )}
+
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((v) => !v)}
+              className="text-[10px] text-violet-600 hover:underline"
+            >
+              {showAdvanced ? "▲ Hide mapping details & custom edit" : "▼ Edit replacement codes manually"}
+            </button>
+
+            {showAdvanced ? (
+              <div className="space-y-2 rounded-md border border-violet-100 bg-white/80 p-2.5">
+                <p className="text-[10px] text-slate-500">Edit Vellore replacement code for any detected supplier item:</p>
+                {mappings.map((mapping) => (
+                  <div key={`adv-${mapping.id}`} className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <span className="text-[10px] text-slate-400">Supplier:</span>
+                      <Input value={mapping.supplierCode} readOnly className="h-7 text-xs font-mono bg-slate-50" />
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-slate-400">Vellore replacement:</span>
+                      <Input
+                        value={mapping.velloreCode}
+                        onChange={(e) => updateMapping(mapping.id, { velloreCode: e.target.value })}
+                        className="h-7 text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          /* Manual View when Auto Approval is OFF */
+          <div className="space-y-2">
+            <p className="text-[11px] text-violet-700 leading-snug">Auto approval is OFF. Review detected supplier product codes below and click Confirm to approve each replacement.</p>
+            {mappings.length === 0 ? (
+              <p className="rounded-md border border-dashed border-violet-200 bg-white/60 p-2 text-[11px] text-violet-700">No likely supplier-product-code matches were detected in the current editor content.</p>
+            ) : (
+              <div className="space-y-2">
+                {mappings.map((mapping, _idx) => (
+                  <div key={`${mapping.id}-${_idx}`} className="rounded-md border border-violet-200 bg-white p-2 shadow-2xs">
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-[11px] font-medium text-slate-700">
+                        <span className="rounded bg-violet-100 px-1.5 py-0.5 text-violet-700">{mapping.pageNumber}</span>
+                        <span>{mapping.section}</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            ignoredCodesRef.current.delete(mapping.supplierCode.toUpperCase());
+                            const nextMappings = mappings.map((item) =>
+                              item.id === mapping.id ? { ...item, status: "confirmed" as const } : item
+                            );
+                            setMappings(nextMappings);
+                            void applyConfirmedMappings({ updateHeader: true, overrideMappings: nextMappings });
+                          }}
+                          className={`rounded px-2 py-1 text-[10px] font-medium border ${mapping.status === "confirmed" || mapping.status === "applied" ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
+                        >
+                          Confirm
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleToggleIgnoreMapping(mapping)}
+                          className={`rounded px-2.5 py-1 text-[10px] font-medium border transition ${mapping.status === "ignored" ? "border-red-400 bg-red-100 text-red-700 font-semibold shadow-2xs" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
+                        >
+                          {mapping.status === "ignored" ? "✓ Ignored" : "Ignore"}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Supplier code</label>
+                        <Input value={mapping.supplierCode} readOnly className="h-8 text-xs font-mono bg-slate-50" />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Vellore code</label>
+                        <Input
+                          value={mapping.velloreCode}
+                          onChange={(e) =>
+                            updateMapping(mapping.id, {
+                              velloreCode: e.target.value,
+                              status: mapping.status === "applied" ? "pending" : mapping.status,
+                            })
+                          }
+                          className="h-8 text-xs font-mono"
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                      <span>Confidence: {mapping.confidence.toFixed(2)}</span>
+                      <span className="capitalize">Status: {mapping.status}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {mappings.length > 0 ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-violet-200 bg-white p-2">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Ready to apply</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="bg-violet-600 hover:bg-violet-700 text-white"
+                  onClick={() => {
+                    const nextMappings = mappings.map((mapping) =>
+                      mapping.status === "ignored" || ignoredCodesRef.current.has(mapping.supplierCode.toUpperCase())
+                        ? { ...mapping, status: "ignored" as const }
+                        : { ...mapping, status: "confirmed" as const }
+                    );
+                    setMappings(nextMappings);
+                    void applyConfirmedMappings({ updateHeader: true, overrideMappings: nextMappings });
+                  }}
+                  disabled={!editor || !mappings.some((mapping) => mapping.status !== "ignored" && !ignoredCodesRef.current.has(mapping.supplierCode.toUpperCase()) && (mapping.status === "confirmed" || mapping.status === "pending"))}
+                >
+                  Apply confirmed mappings
+                </Button>
+              </div>
+            ) : null}
           </div>
         )}
-        {mappings.length > 0 ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-violet-200 bg-white p-2">
-            <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Ready to apply</span>
-            <Button type="button" size="sm" className="bg-violet-600 hover:bg-violet-700 text-white" onClick={() => { applyConfirmedMappings({ updateHeader: true }); }} disabled={!editor || mappings.every((mapping) => mapping.status !== "confirmed")}>
-              Apply confirmed mappings
-            </Button>
-          </div>
-        ) : null}
+
         {result ? (
           <div className="rounded-md border border-violet-200 bg-white p-2">
-            <p className={`text-[11px] font-medium ${result.count > 0 ? "text-emerald-700" : "text-violet-700"}`}>{result.message}</p>
+            <p className={`text-[11px] font-medium ${result.count > 0 || result.message.includes("already") ? "text-emerald-700" : "text-violet-700"}`}>{result.message}</p>
             {result.warnings.length > 0 ? (
               <ul className="mt-2 list-disc pl-4 text-[10px] text-amber-700">
                 {result.warnings.map((warning, i) => <li key={`warning-${i}`}>{warning}</li>)}

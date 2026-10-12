@@ -61,7 +61,7 @@ type TableBlock = {
 type BreakBlock = { kind: "break"; estimatedHeight: 0; meaningful?: false };
 
 export type ExportBlock = HtmlBlock | TableBlock | BreakBlock;
-export type ExportPage = { blocks: ExportBlock[]; usedHeight: number; locked?: boolean };
+export type ExportPage = { blocks: ExportBlock[]; usedHeight: number; locked?: boolean; layoutMode?: DatasheetLayoutMode };
 export type ExportPageModel = { title: string; productCode: string; logoSrc: string; pages: ExportPage[] };
 
 type ImageDisplaySize = "small" | "medium" | "full";
@@ -104,7 +104,7 @@ export function buildExportPageModel(params: { document: ExportDocumentSnapshot;
   };
   const blocks = renderTiptapNodesToExportBlocks(params.document.editorJson.content ?? [], layoutOptions);
   const pageCapacity = resolvePageCapacity(layoutOptions);
-  const paginatedPages = paginateExportBlocks(blocks, pageCapacity);
+  const paginatedPages = paginateExportBlocks(blocks, pageCapacity, layoutOptions);
   const rebalancedPages = layoutOptions.layoutMode === "single-column"
     ? paginatedPages
     : rebalanceVisualUnderfillPages(paginatedPages, pageCapacity, layoutOptions);
@@ -162,10 +162,11 @@ export function renderExportDocumentHtml(pageModel: ExportPageModel, template: E
 
 export function renderExportPageHtml(page: ExportPage, index: number, totalPages: number, template: ExportTemplateSnapshot, pageModel: Pick<ExportPageModel, "title" | "productCode" | "logoSrc">) {
   const pageNumber = index + 1;
-  const estimatedCapacity = resolvePageCapacity({ layoutMode: template.layoutMode, layoutDensity: template.layoutDensity });
+  const layoutMode = page.layoutMode ?? template.layoutMode;
+  const estimatedCapacity = resolvePageCapacity({ layoutMode, layoutDensity: template.layoutDensity });
   const estimatedFill = estimatedCapacity > 0 ? roundHeight(page.usedHeight / estimatedCapacity) : 0;
   const estimatedRemaining = roundHeight(Math.max(estimatedCapacity - page.usedHeight, 0));
-  return `<section class="pdf-page" data-page-number="${pageNumber}" data-total-pages="${totalPages}" data-estimated-used-height="${page.usedHeight}" data-estimated-fill="${estimatedFill}" data-estimated-remaining-height="${estimatedRemaining}"><header class="pdf-header"><div class="header-top"><div class="logo-wrap"><img class="logo" src="${escapeAttribute(pageModel.logoSrc)}" alt="${escapeAttribute(template.companyName || "Vellore Semicon")}" /></div><div class="header-meta"><div class="product-code">${escapeHtml(pageModel.productCode || "Product Code")}</div></div></div><div class="gradient-line"></div><div class="thin-line"></div><div class="product-title">${escapeHtml(pageModel.title || "Product Title")}</div></header><main class="pdf-body layout-${template.layoutMode} layout-density-${template.layoutDensity}" data-page-number="${pageNumber}" data-estimated-used-height="${page.usedHeight}" data-estimated-fill="${estimatedFill}" data-estimated-remaining-height="${estimatedRemaining}">${renderPageBody(page.blocks, template.layoutMode, template.layoutDensity, pageNumber)}</main><footer class="pdf-footer"><div class="footer-line"></div><div class="footer-row"><div>${escapeHtml(template.website || "www.velloresemicon.com")}</div><div class="footer-center">${pageNumber} / ${totalPages}</div><div class="footer-right">${escapeHtml(template.documentStatus || "Preliminary Datasheet")} | ${escapeHtml(template.revision || "Rev. A")}</div></div></footer></section>`;
+  return `<section class="pdf-page" data-page-number="${pageNumber}" data-total-pages="${totalPages}" data-estimated-used-height="${page.usedHeight}" data-estimated-fill="${estimatedFill}" data-estimated-remaining-height="${estimatedRemaining}"><header class="pdf-header"><div class="header-top"><div class="logo-wrap"><img class="logo" src="${escapeAttribute(pageModel.logoSrc)}" alt="${escapeAttribute(template.companyName || "Vellore Semicon")}" /></div><div class="header-meta"><div class="product-code">${escapeHtml(pageModel.productCode || "Product Code")}</div></div></div><div class="gradient-line"></div><div class="thin-line"></div><div class="product-title">${escapeHtml(pageModel.title || "Product Title")}</div></header><main class="pdf-body layout-${layoutMode} layout-density-${template.layoutDensity}" data-page-number="${pageNumber}" data-estimated-used-height="${page.usedHeight}" data-estimated-fill="${estimatedFill}" data-estimated-remaining-height="${estimatedRemaining}">${renderPageBody(page.blocks, layoutMode, template.layoutDensity, pageNumber)}</main><footer class="pdf-footer"><div class="footer-line"></div><div class="footer-row"><div>${escapeHtml(template.website || "www.velloresemicon.com")}</div><div class="footer-center">${pageNumber} / ${totalPages}</div><div class="footer-right">${escapeHtml(template.documentStatus || "Preliminary Datasheet")} | ${escapeHtml(template.revision || "Rev. A")}</div></div></footer></section>`;
 }
 
 export function renderTiptapNodesToExportBlocks(nodes: Array<Record<string, unknown>>, layoutOptions: RenderLayoutOptions = { layoutMode: "two-column", layoutDensity: "technical-dense" }): ExportBlock[] {
@@ -176,7 +177,11 @@ export function renderTiptapNodesToExportBlocks(nodes: Array<Record<string, unkn
   return compactFeatureAndApplicationSections(tableAwareBlocks, layoutOptions).filter((block) => block.kind === "break" || isMeaningfulBlock(block));
 }
 
-export function paginateExportBlocks(blocks: ExportBlock[], pageCapacity = PAGE_BODY_CAPACITY): ExportPage[] {
+export function paginateExportBlocks(
+  blocks: ExportBlock[],
+  pageCapacity = PAGE_BODY_CAPACITY,
+  layoutOptions: RenderLayoutOptions = { layoutMode: "two-column", layoutDensity: "technical-dense" }
+): ExportPage[] {
   const queue = [...blocks];
   const pages: ExportPage[] = [];
   const debug: PaginationDebugEntry[] = [];
@@ -223,13 +228,16 @@ export function paginateExportBlocks(blocks: ExportBlock[], pageCapacity = PAGE_
       continue;
     }
 
-    const remainingHeight = Math.max(pageCapacity - currentHeight, 0);
-    if (block.estimatedHeight <= remainingHeight) {
+    const testBlocks = [...currentBlocks, block];
+    const testHeight = estimateRenderedPageHeight(testBlocks, layoutOptions);
+    if (testHeight <= pageCapacity) {
       currentBlocks.push(block);
-      currentHeight += Math.min(block.estimatedHeight, pageCapacity);
+      currentHeight = testHeight;
       if (pageCapacity - currentHeight <= MIN_FILL_REMAINING_THRESHOLD) finalizePage("page filled to threshold", "remaining height below threshold");
       continue;
     }
+
+    const remainingHeight = Math.max(pageCapacity - currentHeight, 0);
 
     const split = splitBlockForRemainingHeight(block, remainingHeight, pageCapacity);
     if (split) {
@@ -538,7 +546,10 @@ function renderBlock(block: ExportBlock, metadata: RenderBlockMetadata, extraCla
   if (block.kind === "break") return "";
   const attrs = renderBlockDebugAttributes(block, metadata);
   const className = ["page-body-block", block.kind === "html" && block.fullWidth ? "full-width-block" : "", extraClasses].filter(Boolean).join(" ");
-  if (block.kind === "table") return `<div class="${className} table-block"${attrs}><table class="${escapeAttribute(block.variantClass)}"><thead>${block.headerHtml}</thead><tbody>${block.rowHtml.join("")}</tbody></table></div>`;
+  if (block.kind === "table") {
+    const thead = block.headerHtml ? `<thead>${block.headerHtml}</thead>` : "";
+    return `<div class="${className} table-block"${attrs}><table class="${escapeAttribute(block.variantClass)}">${thead}<tbody>${block.rowHtml.join("")}</tbody></table></div>`;
+  }
   return `<div class="${className}"${attrs}>${block.html}</div>`;
 }
 
@@ -676,7 +687,9 @@ function createBlocksForNode(node: Record<string, unknown>, nextNode: Record<str
   const plainText = normalizeTechnicalText(getPlainText(node).replace(/\s+/g, " ").trim());
   if (type === "paragraph") {
     if (attrs.class === "image-caption" && isGenericSourceCaption(node)) return [];
+    if (attrs.class === "extracted-removed") return [];
     if (!plainText || isGenericCaptionText(plainText)) return [];
+    if (/^\d{1,3}$/.test(plainText)) return [];
     if (shouldExcludeExportText(plainText)) return [];
     if (!content.trim()) return [];
     const role = attrs.class === "image-caption" || looksLikeFigureCaption(plainText) ? "caption" : "paragraph";
@@ -684,6 +697,7 @@ function createBlocksForNode(node: Record<string, unknown>, nextNode: Record<str
     return [{ kind: "html", role, html: `<p${classAttribute(attrs)}>${content}</p>`, estimatedHeight: estimateParagraphHeight(node, attrs, layoutOptions), keepWithNext: isKeepWithNext(attrs), meaningful: true, plainText, columnEligible, fullWidth: false }];
   }
   if (type === "heading") {
+    if (attrs.class === "extracted-removed") return [];
     if (!plainText) return [];
     const level = headingLevel(attrs);
     return [{ kind: "html", role: "heading", html: `<h${level}>${content}</h${level}>`, estimatedHeight: estimateHeadingHeight(node, attrs, layoutOptions), keepWithNext: isKeepWithNext(attrs) || shouldKeepHeadingWithNext(nextNode), meaningful: true, plainText, columnEligible: plainText.length <= 54, fullWidth: false }];
@@ -705,11 +719,24 @@ function createBlocksForNode(node: Record<string, unknown>, nextNode: Record<str
 
 function cleanExportBlocks(blocks: ExportBlock[]) {
   const cleaned: ExportBlock[] = [];
+  const seenHeadings = new Set<string>();
+
   for (const block of blocks) {
     if (block.kind === "html" && block.role !== "image" && (!block.plainText || !block.plainText.trim() || isGenericCaptionText(block.plainText))) continue;
     const previous = cleaned.at(-1);
     if (block.kind === "html" && block.role === "caption" && previous?.kind === "html" && previous.role === "caption" && previous.plainText === block.plainText) continue;
     if (block.kind === "table" && previous?.kind === "table" && previous.headerHtml === block.headerHtml && previous.rowHtml.join("") === block.rowHtml.join("")) continue;
+
+    if (block.kind === "html" && block.role === "heading" && block.plainText) {
+      const headingNorm = normalizeTechnicalText(block.plainText).toUpperCase();
+      if (KNOWN_HEADING_PREFIXES.includes(headingNorm)) {
+        if (seenHeadings.has(headingNorm)) continue;
+        seenHeadings.add(headingNorm);
+      } else if (previous?.kind === "html" && previous.role === "heading" && previous.plainText === block.plainText) {
+        continue;
+      }
+    }
+
     cleaned.push(block);
   }
   return cleaned;
@@ -758,15 +785,15 @@ function inferTableSectionHeading(plainText: string, activeSection: string) {
   if (countMatches([/\bRECOMMENDED\b/, /\bOPERATING\b/, /\bCONDITIONS\b/, /\bINPUT VOLTAGE\b/, /\bAMBIENT TEMPERATURE\b/]) >= 2) {
     return "RECOMMENDED OPERATING CONDITIONS";
   }
+  if (countMatches([/\bASSEMBLY\b/, /\bWAFER\b/, /\bSCRIBE STREET\b/, /\bSUBSTRATE\b/, /\bDIE ATTACH\b/, /\bWIRE BOND\b/, /\bBACKSIDE\b/]) >= 2) {
+    return "ASSEMBLY CHARACTERISTICS";
+  }
   const hasMinTypMax = /\b(MIN|TYP|MAX)\b/.test(normalized);
   if (hasMinTypMax && countMatches([/\bMIN\b/, /\bTYP\b/, /\bMAX\b/, /\bTEST CONDITIONS\b/, /\bOUTPUT VOLTAGE\b/, /\bGROUND CURRENT\b/, /\bDROPOUT\b/]) >= 2) {
     return "ELECTRICAL CHARACTERISTICS";
   }
-  if (countMatches([/\bPAD\b/, /\bCOORDINATE\b/, /\bLOCATION\b/, /\bX\s+Y\b/, /\bBOND PAD\b/]) >= 2) {
+  if (countMatches([/\bPAD LOCATION\b/, /\bPAD CENTERS\b/, /\bCOORDINATE\b/, /\bX\s+Y\b/]) >= 1 || countMatches([/\bPAD\b/, /\bCOORDINATES?\b/, /\bLOCATION\b/]) >= 2) {
     return "PAD LOCATION AND COORDINATES";
-  }
-  if (countMatches([/\bASSEMBLY\b/, /\bSUBSTRATE\b/, /\bDIE ATTACH\b/, /\bWIRE BOND\b/, /\bBACKSIDE\b/]) >= 2) {
-    return "ASSEMBLY CHARACTERISTICS";
   }
   return "";
 }
@@ -939,19 +966,30 @@ function createListBlocks(node: Record<string, unknown>, tag: "ul" | "ol", layou
   return [{ kind: "html", role: "list", html: `<${tag}>${itemHtml}</${tag}>`, estimatedHeight: Math.max(dense ? 10 : 14, (dense ? 3 : 5) + items.length * (dense ? 6 : 9) + Math.ceil(plainText.length / (dense ? 115 : 90)) * 2), meaningful: true, plainText, columnEligible: true, fullWidth: false }];
 }
 
+function isRealTableHeaderRow(row: Record<string, unknown> | undefined): boolean {
+  if (!row) return false;
+  const cells = Array.isArray(row.content) ? row.content as Array<Record<string, unknown>> : [];
+  if (cells.some((cell) => cell.type === "tableHeader")) return true;
+  const cellTexts = cells.map(getPlainText).map((t) => t.trim().toLowerCase());
+  const headerTokens = new Set(["parameter", "symbol", "conditions", "test conditions", "min", "typ", "max", "unit", "ratings", "no.", "pad no", "name", "value", "pin"]);
+  return cellTexts.filter((t) => headerTokens.has(t)).length >= 2;
+}
+
 function splitTableIntoBlocks(node: Record<string, unknown>, layoutOptions: RenderLayoutOptions): ExportBlock[] {
   const rows = Array.isArray(node.content) ? node.content as Array<Record<string, unknown>> : [];
   if (rows.length === 0) return [];
-  const [headerRow, ...bodyRows] = rows;
+  const hasRealHeader = isRealTableHeaderRow(rows[0]);
+  const headerRow = hasRealHeader ? rows[0] : undefined;
+  const bodyRows = hasRealHeader ? rows.slice(1) : rows;
   const dense = isTechnicalDense(layoutOptions);
-  const headerHeight = dense ? 12 : 16;
-  const headerHtml = renderTableRow(headerRow, true);
+  const headerHeight = hasRealHeader ? (dense ? 10 : 14) : 0;
+  const headerHtml = headerRow ? renderTableRow(headerRow, true) : "";
   const rowHtml = bodyRows.map((row) => renderTableRow(row, false));
   const rowHeights = bodyRows.map((row) => estimateTableRowHeight(row, layoutOptions));
   const plainText = normalizeTechnicalText(rows.map(getPlainText).join(" ").replace(/\s+/g, " ").trim());
   const columnCount = Math.max(...rows.map((row) => Array.isArray(row.content) ? row.content.length : 0), 0);
   const variantClass = tableVariantClass(columnCount, plainText, layoutOptions);
-  if (bodyRows.length <= 4) return [{ kind: "table", role: "table", estimatedHeight: headerHeight + rowHeights.reduce((sum, value) => sum + value, 0), meaningful: true, headerHtml, rowHtml, rowHeights, plainText, variantClass }];
+  if (bodyRows.length <= 16) return [{ kind: "table", role: "table", estimatedHeight: headerHeight + rowHeights.reduce((sum, value) => sum + value, 0), meaningful: true, headerHtml, rowHtml, rowHeights, plainText, variantClass }];
   const segmentTargetHeight = dense ? TABLE_SEGMENT_TARGET_HEIGHT_DENSE : TABLE_SEGMENT_TARGET_HEIGHT;
   const maxSegmentHeight = dense ? MAX_TABLE_SEGMENT_HEIGHT_DENSE : MAX_TABLE_SEGMENT_HEIGHT;
   const segments: TableBlock[] = [];
@@ -959,7 +997,7 @@ function splitTableIntoBlocks(node: Record<string, unknown>, layoutOptions: Rend
   let currentHeights: number[] = [];
   let currentHeight = headerHeight;
   for (let index = 0; index < rowHtml.length; index += 1) {
-    const nextHeight = rowHeights[index] ?? (dense ? 8 : 14);
+    const nextHeight = rowHeights[index] ?? (dense ? 5 : 8);
     const remainingRows = rowHtml.length - index;
     const shouldSplit = currentRows.length >= MIN_TABLE_ROWS_PER_SEGMENT && currentHeight + nextHeight > segmentTargetHeight && remainingRows >= MIN_TABLE_ROWS_PER_SEGMENT;
     if (shouldSplit || currentHeight + nextHeight > maxSegmentHeight) {
@@ -1110,7 +1148,7 @@ function estimateParagraphHeight(node: Record<string, unknown>, attrs: Record<st
 function estimateHeadingHeight(node: Record<string, unknown>, attrs: Record<string, unknown>, layoutOptions: RenderLayoutOptions) { const text = normalizeTechnicalText(getPlainText(node).replace(/\s+/g, " ").trim()); const level = headingLevel(attrs); const dense = isTechnicalDense(layoutOptions); const perLine = level === 1 ? (dense ? 14.5 : 19.2) : level === 2 ? (dense ? 10.2 : 15.1) : (dense ? 9.2 : 12.9); const charsPerLine = level === 1 ? (dense ? 43 : 36) : dense ? 55 : 48; return Math.max(perLine, Math.ceil(Math.max(text.length, 1) / charsPerLine) * perLine + (dense ? 0.9 : 2.5)); }
 function estimateImageHeight(image: Pick<ImageMeta, "width" | "height" | "aspectRatio" | "variantClass" | "displaySize">, layoutOptions: RenderLayoutOptions, columnEligible = false) { const dense = isTechnicalDense(layoutOptions); const scale = image.displaySize === "small" ? (columnEligible ? 0.52 : 0.38) : image.displaySize === "full" ? 1 : (columnEligible ? 0.78 : 0.62); const maxWidth = columnEligible ? COLUMN_IMAGE_MAX_WIDTH : IMAGE_MAX_WIDTH; const maxHeight = columnEligible ? (dense ? (image.displaySize === "small" ? 28 : 36) : 52) : (dense ? PAGE_BODY_IMAGE_MAX_DENSE : PAGE_BODY_IMAGE_MAX); if (image.aspectRatio && image.aspectRatio > 0) { const projected = (maxWidth * scale) / image.aspectRatio; const adjusted = image.variantClass === "figure-image-tall" ? Math.min(projected, maxHeight) : Math.min(projected + (columnEligible ? 0.6 : 3), maxHeight); return Math.max(columnEligible ? 12 : 20, adjusted); } if (image.width && image.height && image.height > 0) return Math.max(columnEligible ? 12 : 20, Math.min((maxWidth * scale * image.height) / image.width, maxHeight)); return columnEligible ? 20 : image.displaySize === "small" ? 34 : 52; }
 function estimatePlainTextHeight(text: string, charsPerLine: number, lineUnit = 6, basePad = 6) { const normalized = text.replace(/\s+/g, " ").trim(); if (!normalized) return 0; const lines = Math.max(1, Math.ceil(normalized.length / charsPerLine)); return basePad + lines * lineUnit; }
-function estimateTableRowHeight(row: Record<string, unknown>, layoutOptions: RenderLayoutOptions) { const text = normalizeTechnicalText(getPlainText(row).replace(/\s+/g, " ").trim()); const dense = isTechnicalDense(layoutOptions); const minVal = dense ? 7.2 : 14.5; const baseVal = dense ? 4.5 : 9.5; const charsPerLine = dense ? 78 : 44; const lineCoef = dense ? 3.2 : 6; return Math.max(minVal, baseVal + Math.ceil(Math.max(text.length, 1) / charsPerLine) * lineCoef); }
+function estimateTableRowHeight(row: Record<string, unknown>, layoutOptions: RenderLayoutOptions) { const text = normalizeTechnicalText(getPlainText(row).replace(/\s+/g, " ").trim()); const dense = isTechnicalDense(layoutOptions); const minVal = dense ? 4.5 : 8.5; const baseVal = dense ? 3.0 : 6.0; const charsPerLine = dense ? 88 : 46; const lineCoef = dense ? 2.5 : 4.8; return Math.max(minVal, baseVal + Math.ceil(Math.max(text.length, 1) / charsPerLine) * lineCoef); }
 function tableVariantClass(columnCount: number, plainText: string, layoutOptions: RenderLayoutOptions) { const dense = layoutOptions.layoutDensity === "technical-dense" || columnCount >= 4 || plainText.length > 280; return dense ? "technical-table technical-table-dense" : "technical-table"; }
 function shouldRenderImageInColumn(image: ImageMeta, surroundingText: string) {
   const label = `${image.alt} ${surroundingText}`.toLowerCase();

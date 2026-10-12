@@ -200,6 +200,42 @@ class RebrandResponse(BaseModel):
     error: str | None = None
 
 
+class ProductCodeMappingItem(BaseModel):
+    id: str | None = None
+    supplierCode: str
+    velloreCode: str
+    status: Literal["pending", "confirmed", "ignored", "applied"] = "confirmed"
+    confidence: float = 1.0
+
+
+class ReplacementReportModel(BaseModel):
+    attempted: int = 0
+    successful: int = 0
+    keptOriginal: int = 0
+    failed: int = 0
+    warnings: list[str] = Field(default_factory=list)
+
+
+class DirectPdfRebrandRequest(BaseModel):
+    projectId: str
+    ownerId: str
+    sourceStorageKey: str
+    mappings: list[ProductCodeMappingItem] = Field(default_factory=list)
+    branding: BrandingSettings
+    headerMaskTopPt: float = 82.0
+    footerMaskBottomPt: float = 45.0
+    website: str = "www.velloresemicon.com"
+
+
+class DirectPdfRebrandResponse(BaseModel):
+    success: bool
+    pdfStorageKey: str | None = None
+    fileSize: int | None = None
+    pageCount: int | None = None
+    report: ReplacementReportModel
+    error: str | None = None
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -280,6 +316,10 @@ def s3_client():
 
 
 def download_object(storage_key: str, destination: Path) -> None:
+    local_path = Path(storage_key)
+    if local_path.is_file():
+        shutil.copy2(local_path, destination)
+        return
     s3_client().download_file(os.environ["S3_BUCKET"], storage_key, str(destination))
 
 
@@ -897,36 +937,99 @@ def native_text_blocks(page: fitz.Page, page_number: int) -> list[TextBlock]:
     blocks: list[TextBlock] = []
     order = 0
     for raw_block in sorted(data.get("blocks", []), key=lambda item: (item.get("bbox", [0, 0, 0, 0])[1], item.get("bbox", [0, 0, 0, 0])[0])):
-        lines = raw_block.get("lines", [])
-        text_parts: list[str] = []
-        font_size: float | None = None
-        font_family: str | None = None
-        for line in lines:
-            for span in line.get("spans", []):
-                value = span.get("text", "").strip()
-                if value:
-                    text_parts.append(value)
-                    font_size = font_size or float(span.get("size", 0) or 0)
-                    font_family = font_family or span.get("font")
-        text = " ".join(text_parts).strip()
-        if not text or is_distributor_watermark(text):
+        raw_lines = raw_block.get("lines", [])
+        if not raw_lines:
             continue
-        bbox = raw_block.get("bbox", [0, 0, 0, 0])
-        blocks.append(
-            TextBlock(
-                id=f"p{page_number}-text-{order}",
-                type=classify_text(text, font_size),
-                text=text,
-                pageNumber=page_number,
-                boundingBox=box_from_bbox(bbox),
-                fontSize=font_size,
-                fontFamily=font_family,
-                extractionMethod="native",
-                confidence=0.92,
-                readingOrderIndex=order,
+
+        parsed_lines = []
+        for l in raw_lines:
+            spans = [s for s in l.get("spans", []) if s.get("text", "").strip()]
+            if not spans:
+                continue
+            line_text = " ".join(s["text"].strip() for s in spans).strip()
+            is_bold = any((s.get("flags", 0) & 16) or "bold" in s.get("font", "").lower() for s in spans)
+            max_size = max(float(s.get("size", 0) or 0) for s in spans)
+            font_family = spans[0].get("font")
+            parsed_lines.append({
+                "bbox": l["bbox"],
+                "text": line_text,
+                "is_bold": is_bold,
+                "size": max_size,
+                "font_family": font_family,
+                "is_bullet": line_text.startswith(("•", "-", "*", "\u2022")),
+            })
+
+        if not parsed_lines:
+            continue
+
+        sub_groups = []
+        current_group = [parsed_lines[0]]
+        for i in range(1, len(parsed_lines)):
+            prev = parsed_lines[i - 1]
+            curr = parsed_lines[i]
+            y_gap = curr["bbox"][1] - prev["bbox"][3]
+            line_h = max(prev["bbox"][3] - prev["bbox"][1], 8.0)
+
+            should_split = False
+            # 1. Clear vertical paragraph gap
+            if y_gap > max(7.0, 1.4 * line_h):
+                should_split = True
+            # 2. Heading transition: line ends with ':' and next line starts a bullet list
+            elif prev["text"].endswith(":") and curr["is_bullet"]:
+                should_split = True
+            # 3. Transition from bullet item to non-bullet heading or paragraph
+            elif prev["is_bullet"] and not curr["is_bullet"] and y_gap > 3.0:
+                should_split = True
+            # 4. Bold heading line following regular text
+            elif not prev["is_bold"] and curr["is_bold"] and len(curr["text"]) < 80:
+                should_split = True
+
+            if should_split:
+                sub_groups.append(current_group)
+                current_group = [curr]
+            else:
+                current_group.append(curr)
+
+        if current_group:
+            sub_groups.append(current_group)
+
+        for grp in sub_groups:
+            parts = [item["text"] for item in grp]
+            text = " ".join(parts).strip()
+            if not text or is_distributor_watermark(text):
+                continue
+
+            x0 = min(item["bbox"][0] for item in grp)
+            y0 = min(item["bbox"][1] for item in grp)
+            x1 = max(item["bbox"][2] for item in grp)
+            y1 = max(item["bbox"][3] for item in grp)
+            f_size = max(item["size"] for item in grp)
+            f_family = grp[0]["font_family"]
+            is_bold = any(item["is_bold"] for item in grp)
+
+            b_type = classify_text(text, f_size)
+            if text.startswith(("- ", "* ", "• ", "\u2022 ")):
+                b_type = "list_item"
+            elif (is_bold or (f_size and f_size >= 14)) and len(text) < 100:
+                b_type = "heading"
+            elif text.endswith(":") and len(text) < 60:
+                b_type = "heading"
+
+            blocks.append(
+                TextBlock(
+                    id=f"p{page_number}-text-{order}",
+                    type=b_type,
+                    text=text,
+                    pageNumber=page_number,
+                    boundingBox=box_from_bbox([x0, y0, x1, y1]),
+                    fontSize=f_size,
+                    fontFamily=f_family,
+                    extractionMethod="native",
+                    confidence=0.92,
+                    readingOrderIndex=order,
+                )
             )
-        )
-        order += 1
+            order += 1
     return blocks
 
 
@@ -1151,7 +1254,9 @@ def extract_tables(pdf_path: Path, warnings: list[str]) -> dict[int, list[Extrac
         try:
             with pdfplumber.open(pdf_path) as pdf:
                 for page_index, page in enumerate(pdf.pages, start=1):
-                    for table_index, raw_table in enumerate(page.extract_tables() or []):
+                    found_tables = page.find_tables() or []
+                    for table_index, table_obj in enumerate(found_tables):
+                        raw_table = table_obj.extract() or []
                         rows = [[TableCell(text=(cell or "").strip(), rowSpan=1, colSpan=1) for cell in row] for row in raw_table if any((cell or "").strip() for cell in row)]
                         if len(rows) < 2 or max((len(row) for row in rows), default=0) < 2:
                             continue
@@ -1159,13 +1264,30 @@ def extract_tables(pdf_path: Path, warnings: list[str]) -> dict[int, list[Extrac
                             ExtractedTable(
                                 id=f"p{page_index}-table-{table_index}",
                                 pageNumber=page_index,
-                                boundingBox=BoundingBox(x=0, y=0, width=float(page.width), height=float(page.height)),
+                                boundingBox=box_from_bbox(table_obj.bbox),
                                 rows=rows,
-                                confidence=0.7,
+                                confidence=0.75,
                                 extractionMethod="pdfplumber",
                                 warnings=[],
                             )
                         )
+                    # Fallback if find_tables found no tables on this page
+                    if not tables_by_page.get(page_index):
+                        for table_index, raw_table in enumerate(page.extract_tables() or []):
+                            rows = [[TableCell(text=(cell or "").strip(), rowSpan=1, colSpan=1) for cell in row] for row in raw_table if any((cell or "").strip() for cell in row)]
+                            if len(rows) < 2 or max((len(row) for row in rows), default=0) < 2:
+                                continue
+                            tables_by_page.setdefault(page_index, []).append(
+                                ExtractedTable(
+                                    id=f"p{page_index}-table-{table_index}",
+                                    pageNumber=page_index,
+                                    boundingBox=BoundingBox(x=float(page.width * 0.05), y=float(page.height * 0.15), width=float(page.width * 0.9), height=float(page.height * 0.7)),
+                                    rows=rows,
+                                    confidence=0.6,
+                                    extractionMethod="pdfplumber",
+                                    warnings=[],
+                                )
+                            )
         except Exception as exc:
             warnings.append(f"TABLE_EXTRACTION_UNCERTAIN:{str(exc)[:80]}")
             
@@ -1344,12 +1466,9 @@ def rebrand_docx_endpoint(request: RebrandRequest) -> RebrandResponse:
         
         replacements = {}
         if request.branding.companyName:
-            replacements["Old Semiconductor Inc."] = request.branding.companyName
-            replacements["Old Semiconductor"] = request.branding.companyName
             replacements["Vellore Semicon"] = request.branding.companyName
             
         if request.branding.productCode:
-            replacements["OS29150"] = request.branding.productCode
             replacements["VS29150"] = request.branding.productCode
 
         if request.branding.productTitle:
@@ -1402,4 +1521,276 @@ def rebrand_docx_endpoint(request: RebrandRequest) -> RebrandResponse:
         return RebrandResponse(success=False, error=str(exc))
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+CYRILLIC_TO_LATIN = {
+    'А': 'A', 'В': 'B', 'Е': 'E', 'К': 'K', 'М': 'M', 'Н': 'H', 'О': 'O', 'Р': 'P', 'С': 'S', 'Т': 'T', 'Х': 'X',
+    'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 's', 'у': 'y', 'х': 'x'
+}
+LATIN_TO_CYRILLIC = {v: k for k, v in CYRILLIC_TO_LATIN.items()}
+
+
+def get_code_search_variants(code: str) -> list[str]:
+    variants = {code}
+    latin_v = "".join(CYRILLIC_TO_LATIN.get(c, c) for c in code)
+    variants.add(latin_v)
+    cyr_v = "".join(LATIN_TO_CYRILLIC.get(c, c) for c in code)
+    variants.add(cyr_v)
+    if code and code[0] == 'K':
+        variants.add('К' + code[1:])
+    elif code and code[0] == 'К':
+        variants.add('K' + code[1:])
+    return [v for v in variants if v]
+
+
+@app.post("/rebrand-pdf-direct", response_model=DirectPdfRebrandResponse)
+def rebrand_pdf_direct_endpoint(request: DirectPdfRebrandRequest) -> DirectPdfRebrandResponse:
+    job_id = uuid.uuid4().hex
+    work_dir = Path(tempfile.gettempdir()) / "pdf-rebrand-direct" / request.projectId / job_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+    pdf_in_path = work_dir / "source.pdf"
+    pdf_out_path = work_dir / "rebranded.pdf"
+    logo_path = work_dir / "logo.png"
+
+    report = ReplacementReportModel()
+
+    try:
+        download_object(request.sourceStorageKey, pdf_in_path)
+        data = pdf_in_path.read_bytes()
+        if not data.startswith(b"%PDF-"):
+            return DirectPdfRebrandResponse(
+                success=False,
+                report=report,
+                error="Invalid PDF signature: downloaded object is not a valid PDF",
+            )
+
+        has_logo = False
+        if request.branding.logoStorageKey:
+            try:
+                download_object(request.branding.logoStorageKey, logo_path)
+                has_logo = True
+            except Exception as logo_err:
+                report.warnings.append(f"Logo download failed: {logo_err}")
+
+        # Primary brand color (default maroon #800000)
+        primary_hex = (request.branding.primaryColor or "#800000").lstrip("#")
+        try:
+            if len(primary_hex) == 6:
+                primary_rgb = (
+                    int(primary_hex[0:2], 16) / 255.0,
+                    int(primary_hex[2:4], 16) / 255.0,
+                    int(primary_hex[4:6], 16) / 255.0,
+                )
+            else:
+                primary_rgb = (0.50, 0.0, 0.0)
+        except Exception:
+            primary_rgb = (0.50, 0.0, 0.0)
+
+        company_name = request.branding.companyName or "VELLORE SEMICON"
+        vellore_product_code = request.branding.productCode or ""
+        document_status = request.branding.documentStatus or "Preliminary Datasheet"
+        website_url = request.website or "www.velloresemicon.com"
+
+        doc = fitz.open(pdf_in_path)
+        total_pages = len(doc)
+        if total_pages == 0:
+            doc.close()
+            return DirectPdfRebrandResponse(
+                success=False,
+                report=report,
+                error="Source PDF contains 0 pages",
+            )
+
+        # Sort active mappings by supplier code length descending
+        active_mappings = []
+        for m in request.mappings:
+            sc = m.supplierCode.strip()
+            vc = m.velloreCode.strip()
+            if sc and vc:
+                active_mappings.append(m)
+
+        active_mappings.sort(key=lambda x: len(x.supplierCode), reverse=True)
+
+        # Known distributor & supplier watermarks to remove across all pages
+        supplier_watermarks = [
+            "www.vzpp-mikron.ru",
+            "vzpp-mikron.ru",
+            "vzpp-mikron",
+            "datasheet4u",
+            "alldatasheet",
+            "fairchildsemi",
+            "onsemi.com",
+            "downloaded from",
+        ]
+
+        for page_idx, page in enumerate(doc):
+            page_num = page_idx + 1
+            width = float(page.rect.width)
+            height = float(page.rect.height)
+
+            # 1. Redact top header strip:
+            header_rect = fitz.Rect(30, 8, width - 30, request.headerMaskTopPt)
+            page.add_redact_annot(header_rect, fill=(1, 1, 1))
+
+            # 2. Redact bottom footer strip across ALL pages:
+            footer_rect = fitz.Rect(30, height - request.footerMaskBottomPt, width - 30, height - 8)
+            page.add_redact_annot(footer_rect, fill=(1, 1, 1))
+
+            # 3. Search and redact specific supplier watermark texts:
+            for watermark in supplier_watermarks:
+                matches = page.search_for(watermark)
+                for rect in matches:
+                    page.add_redact_annot(rect, fill=(1, 1, 1))
+
+            # 4. Search and replace product codes:
+            pending_replacements = []
+
+            for mapping in active_mappings:
+                s_code = mapping.supplierCode.strip()
+                v_code = mapping.velloreCode.strip()
+
+                search_vars = get_code_search_variants(s_code)
+                all_matches: list[fitz.Rect] = []
+                for var in search_vars:
+                    for r in page.search_for(var):
+                        # skip if inside header or footer mask
+                        if r.y1 <= request.headerMaskTopPt or r.y0 >= (height - request.footerMaskBottomPt):
+                            continue
+                        if not any(abs(r.x0 - m.x0) < 2 and abs(r.y0 - m.y0) < 2 for m in all_matches):
+                            all_matches.append(r)
+
+                for rect in all_matches:
+                    report.attempted += 1
+
+                    # Check word boundaries to avoid partial replacement inside formulas or words
+                    words = page.get_text("words")
+                    intersecting_words = [w for w in words if fitz.Rect(w[:4]).intersects(rect)]
+                    is_exact_token = True
+                    for w in intersecting_words:
+                        pieces = [re.sub(r'^[^\w]+|[^\w]+$', '', p) for p in re.split(r'[/,;|()\[\]\s]+', w[4]) if p]
+                        matched_var = next((var for var in search_vars if any(var == p for p in pieces)), None)
+                        if matched_var is None:
+                            is_exact_token = False
+                            break
+
+                    if not is_exact_token:
+                        report.keptOriginal += 1
+                        report.warnings.append(
+                            f"Skipped partial replacement of '{s_code}' inside longer word on page {page_num}"
+                        )
+                        continue
+
+                    # If mapping is ignored or unconfirmed with low confidence: keep original per Scope rule 7!
+                    if mapping.status == "ignored" or (mapping.status == "pending" and mapping.confidence < 0.8):
+                        report.keptOriginal += 1
+                        report.warnings.append(
+                            f"Retained original product code '{s_code}' on page {page_num} (mapping status: {mapping.status})"
+                        )
+                        continue
+
+                    # Safe exact match to replace!
+                    pad_rect = fitz.Rect(rect.x0 - 0.2, rect.y0 - 0.2, rect.x1 + 0.2, rect.y1 + 0.2)
+                    page.add_redact_annot(pad_rect, fill=(1, 1, 1))
+
+                    pending_replacements.append((rect, v_code))
+                    report.successful += 1
+
+            # 5. Apply all redactions cleanly on the page:
+            page.apply_redactions()
+
+            # 6. Re-insert replacement product codes into the redacted positions:
+            for orig_rect, v_code in pending_replacements:
+                try:
+                    font_size = min(orig_rect.height * 0.82, (orig_rect.width / max(1, len(v_code) * 0.56)))
+                    font_size = max(6.0, min(14.0, font_size))
+                    baseline_y = orig_rect.y1 - (orig_rect.height * 0.16)
+
+                    page.insert_text(
+                        fitz.Point(orig_rect.x0, baseline_y),
+                        v_code,
+                        fontsize=font_size,
+                        fontname="hebo",
+                        color=(0.10, 0.15, 0.20),
+                    )
+                except Exception as ins_err:
+                    report.failed += 1
+                    report.warnings.append(f"Failed to insert replacement text '{v_code}' on page {page_num}: {ins_err}")
+
+            # 7. Stamp Vellore Semicon Branding:
+            # Header line:
+            header_line_y = request.headerMaskTopPt - 8.0
+            page.draw_line(fitz.Point(36, header_line_y), fitz.Point(width - 36, header_line_y), color=primary_rgb, width=1.0)
+
+            # Header Left: Logo or Company Name
+            if has_logo:
+                try:
+                    logo_rect = fitz.Rect(36, 16, 140, header_line_y - 6.0)
+                    page.insert_image(logo_rect, filename=str(logo_path), keep_proportion=True)
+                except Exception:
+                    page.insert_text(fitz.Point(36, header_line_y - 12.0), company_name, fontsize=11.0, fontname="hebo", color=primary_rgb)
+            else:
+                page.insert_text(fitz.Point(36, header_line_y - 12.0), company_name, fontsize=11.0, fontname="hebo", color=primary_rgb)
+
+            # Header Right: Vellore Product Code
+            if vellore_product_code:
+                code_text = vellore_product_code
+                code_width = len(code_text) * 10.0 * 0.55
+                x_pos = max(width - 36 - code_width, width / 2)
+                page.insert_text(fitz.Point(x_pos, header_line_y - 12.0), code_text, fontsize=10.0, fontname="hebo", color=(0.15, 0.20, 0.25))
+
+            # Footer line:
+            footer_line_y = height - request.footerMaskBottomPt + 8.0
+            footer_text_y = height - 16.0
+            page.draw_line(fitz.Point(36, footer_line_y), fitz.Point(width - 36, footer_line_y), color=(0.80, 0.82, 0.85), width=0.5)
+
+            # Footer Left: Website URL
+            page.insert_text(fitz.Point(36, footer_text_y), website_url, fontsize=8, fontname="helv", color=(0.35, 0.40, 0.45))
+
+            # Footer Center: Page Number "X / Y"
+            page_text = f"{page_num} / {total_pages}"
+            p_width = len(page_text) * 8 * 0.55
+            page.insert_text(fitz.Point((width - p_width) / 2.0, footer_text_y), page_text, fontsize=8, fontname="hebo", color=(0.20, 0.25, 0.30))
+
+            # Footer Right: Document Status
+            s_width = len(document_status) * 8 * 0.55
+            page.insert_text(fitz.Point(width - 36 - s_width, footer_text_y), document_status, fontsize=8, fontname="helv", color=(0.35, 0.40, 0.45))
+
+        # 8. Save rebranded PDF
+        doc.save(str(pdf_out_path), garbage=3, deflate=True)
+        doc.close()
+
+        # 9. Verify page count
+        out_doc = fitz.open(pdf_out_path)
+        out_page_count = len(out_doc)
+        out_doc.close()
+
+        if out_page_count != total_pages:
+            return DirectPdfRebrandResponse(
+                success=False,
+                report=report,
+                error=f"Page count mismatch: expected {total_pages}, got {out_page_count}",
+            )
+
+        # 10. Upload to S3/MinIO
+        out_bytes = pdf_out_path.read_bytes()
+        export_key = f"users/{request.ownerId}/projects/{request.projectId}/exports/direct_{uuid.uuid4().hex}.pdf"
+        upload_bytes(export_key, out_bytes, "application/pdf")
+
+        return DirectPdfRebrandResponse(
+            success=True,
+            pdfStorageKey=export_key,
+            fileSize=len(out_bytes),
+            pageCount=out_page_count,
+            report=report,
+        )
+
+    except Exception as exc:
+        return DirectPdfRebrandResponse(
+            success=False,
+            report=report,
+            error=str(exc)[:400],
+        )
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
 

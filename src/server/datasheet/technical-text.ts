@@ -116,8 +116,8 @@ export function normalizeTechnicalText(input: string) {
 
   text = text
     .replace(/\bohm\b/gi, "\u03a9")
-    .replace(/\bu\s*(\d{1,3})m(0*)\s*[xX*]\s*u?(\d{1,3})m(0*)\b/gi, (_match, left, leftZeros, right, rightZeros) => `${left}${leftZeros}\u00d7${right}${rightZeros} \u00b5m`)
-    .replace(/(\d)\s*[xX*]\s*(\d)/g, "$1\u00d7$2")
+    .replace(/\bu?\s*(\d{1,3})\s*m\s*(0*)\s*[*xX\u00d7]+\s*u?\s*(\d{1,3})\s*m\s*(0*)\b/gi, (_match, left, leftZeros, right, rightZeros) => `${left}${leftZeros}\u00d7${right}${rightZeros} \u00b5m`)
+    .replace(/(\d)\s*[*xX\u00d7]+\s*(\d)/g, "$1\u00d7$2")
     .replace(/(^|[\s[(,;:])u\s*m(?=$|[\s\])',;:.])/gi, "$1\u00b5m")
     .replace(/\(\s*u\s*m\s*\)/gi, "(\u00b5m)")
     .replace(/(\d(?:[.,]\d+)?)\s*u\s*m\b/gi, "$1 \u00b5m")

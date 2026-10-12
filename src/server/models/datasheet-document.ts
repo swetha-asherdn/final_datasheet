@@ -14,6 +14,27 @@ const datasheetDocumentSchema = new Schema(
     productCategory: { type: String, default: "", trim: true },
     editorJson: { type: Schema.Types.Mixed, required: true },
     sourceCleanupReport: { type: Schema.Types.Mixed, required: true },
+    supplierCodeMappings: {
+      type: [
+        {
+          id: { type: String, required: true },
+          supplierCode: { type: String, required: true },
+          velloreCode: { type: String, required: true },
+          pageNumber: { type: Number, default: 1 },
+          section: { type: String, default: "body" },
+          confidence: { type: Number, default: 1.0 },
+          status: { type: String, enum: ["pending", "confirmed", "ignored", "applied"], default: "confirmed" },
+        }
+      ],
+      default: []
+    },
+    latestReplacementReport: {
+      attempted: { type: Number, default: 0 },
+      successful: { type: Number, default: 0 },
+      keptOriginal: { type: Number, default: 0 },
+      failed: { type: Number, default: 0 },
+      warnings: [{ type: String }]
+    },
     createdFromExtractionAt: { type: Date, required: true, default: Date.now },
     lastSavedAt: { type: Date, required: true, default: Date.now }
   },

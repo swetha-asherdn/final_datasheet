@@ -30,13 +30,16 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ pr
   } catch (error) {
     if (error instanceof ZodError) {
       console.error("[/api/projects/[projectId]/datasheet] Zod validation failed", JSON.stringify({
-        issues: error.issues.map((issue) => ({
-          path: issue.path,
-          code: issue.code,
-          expected: issue.expected,
-          received: issue.received,
-          message: issue.message
-        }))
+        issues: error.issues.map((issue) => {
+          const raw = issue as unknown as Record<string, unknown>;
+          return {
+            path: issue.path,
+            code: issue.code,
+            expected: raw.expected,
+            received: raw.received,
+            message: issue.message
+          };
+        })
       }, null, 2));
     }
     return errorResponse(error);

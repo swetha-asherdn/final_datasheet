@@ -22,7 +22,15 @@ const datasheetExportSchema = new Schema(
       revision: { type: String, default: "" },
       website: { type: String, default: "" },
       primaryColor: { type: String, default: "" },
-      accentColor: { type: String, default: "" }
+      accentColor: { type: String, default: "" },
+      exportMode: { type: String, default: "auto" },
+      replacementReport: {
+        attempted: { type: Number, default: 0 },
+        successful: { type: Number, default: 0 },
+        keptOriginal: { type: Number, default: 0 },
+        failed: { type: Number, default: 0 },
+        warnings: [{ type: String }]
+      }
     }
   },
   { timestamps: true }

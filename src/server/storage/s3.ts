@@ -16,22 +16,81 @@ export function getS3Client() {
   return client;
 }
 
+export function isStorageConnectionError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const err = error as Record<string, unknown>;
+  const code = String(err.code || "");
+  const message = String(err.message || "");
+  const name = String(err.name || "");
+  return (
+    code === "ECONNREFUSED" ||
+    code === "ENOTFOUND" ||
+    code === "EHOSTUNREACH" ||
+    code === "ETIMEDOUT" ||
+    message.includes("ECONNREFUSED") ||
+    message.includes("connect ECONNREFUSED") ||
+    message.includes("fetch failed") ||
+    name === "TimeoutError" ||
+    name === "ConnectTimeoutError"
+  );
+}
+
+export function wrapStorageError(error: unknown): never {
+  if (error instanceof AppError) throw error;
+  if (isStorageConnectionError(error)) {
+    throw new AppError(
+      `Storage service is unavailable at ${env.S3_ENDPOINT}. Please ensure MinIO/S3 is running and reachable.`,
+      503,
+      { code: "STORAGE_SERVICE_UNAVAILABLE" }
+    );
+  }
+  throw error;
+}
+
+type S3Sendable = {
+  send: <T = unknown>(command: unknown) => Promise<T>;
+};
+
 export async function ensureBucket() {
-  const s3 = getS3Client();
-  try { await s3.send(new HeadBucketCommand({ Bucket: env.S3_BUCKET })); } catch { await s3.send(new CreateBucketCommand({ Bucket: env.S3_BUCKET })); }
+  const s3 = getS3Client() as unknown as S3Sendable;
+  try {
+    await s3.send(new HeadBucketCommand({ Bucket: env.S3_BUCKET }));
+  } catch (error) {
+    if (isStorageConnectionError(error)) {
+      wrapStorageError(error);
+    }
+    try {
+      await s3.send(new CreateBucketCommand({ Bucket: env.S3_BUCKET }));
+    } catch (createError) {
+      if (isStorageConnectionError(createError)) {
+        wrapStorageError(createError);
+      }
+      const errName = (createError as { name?: string })?.name;
+      if (errName === "BucketAlreadyOwnedByYou" || errName === "BucketAlreadyExists") {
+        return;
+      }
+      throw createError;
+    }
+  }
 }
 
 export async function uploadPrivateObject(params: { key: string; body: Buffer; contentType: string; metadata?: Record<string, string> }) {
-  await ensureBucket();
-  await getS3Client().send(new PutObjectCommand({ Bucket: env.S3_BUCKET, Key: params.key, Body: params.body, ContentType: params.contentType, Metadata: params.metadata }));
+  try {
+    await ensureBucket();
+    const s3 = getS3Client() as unknown as S3Sendable;
+    await s3.send(new PutObjectCommand({ Bucket: env.S3_BUCKET, Key: params.key, Body: params.body, ContentType: params.contentType, Metadata: params.metadata }));
+  } catch (error) {
+    wrapStorageError(error);
+  }
 }
 
 export async function getPrivateObject(key: string): Promise<PrivateObject> {
   try {
-    const response = await getS3Client().send(new GetObjectCommand({ Bucket: env.S3_BUCKET, Key: key }));
+    const s3 = getS3Client() as unknown as S3Sendable;
+    const response = await s3.send<Record<string, unknown>>(new GetObjectCommand({ Bucket: env.S3_BUCKET, Key: key }));
     return {
       body: toWebStream(response.Body),
-      contentType: response.ContentType ?? null,
+      contentType: (response.ContentType as string | undefined) ?? null,
       contentLength: typeof response.ContentLength === "number" ? response.ContentLength : undefined
     };
   } catch (error) {
@@ -39,12 +98,16 @@ export async function getPrivateObject(key: string): Promise<PrivateObject> {
       throw new AppError("Artifact not found", 404, { code: "ARTIFACT_NOT_FOUND" });
     }
 
-    throw error;
+    wrapStorageError(error);
   }
 }
 
 export async function createSignedReadUrl(key: string, expiresIn = 300) {
-  return getSignedUrl(getS3Client(), new GetObjectCommand({ Bucket: env.S3_BUCKET, Key: key }), { expiresIn });
+  try {
+    return await getSignedUrl(getS3Client() as unknown as Parameters<typeof getSignedUrl>[0], new GetObjectCommand({ Bucket: env.S3_BUCKET, Key: key }), { expiresIn });
+  } catch (error) {
+    wrapStorageError(error);
+  }
 }
 
 function toWebStream(body: unknown) {

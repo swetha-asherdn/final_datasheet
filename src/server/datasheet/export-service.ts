@@ -15,7 +15,13 @@ import { DatasheetDocumentModel } from "@/server/models/datasheet-document";
 import { DatasheetExportModel } from "@/server/models/datasheet-export";
 import { DatasheetTemplateSettingsModel } from "@/server/models/datasheet-template-settings";
 import { ProjectModel } from "@/server/models/project";
-import { getExtractedImageArtifactForProject } from "@/server/extraction/service";
+import { callPythonDirectPdfRebrandService, getExtractedImageArtifactForProject } from "@/server/extraction/service";
+import {
+  autoApproveSupplierCodeMappings,
+  buildSuggestedSupplierMappings,
+  detectSupplierProductCodesFromEditorJson,
+  type ReplacementReport,
+} from "@/lib/supplier-product-code-mapping";
 import { getPrivateObject, uploadPrivateObject } from "@/server/storage/s3";
 
 type ExportRecord = Record<string, unknown>;
@@ -72,6 +78,8 @@ export type SerializedDatasheetExport = {
     layoutMode?: string;
     layoutDensity?: string;
     pageFillStrategy?: string;
+    exportMode?: string;
+    replacementReport?: ReplacementReport;
   };
   downloadUrl: string | null;
 };
@@ -109,6 +117,89 @@ export async function createPdfExportForProject(params: {
       preparedSnapshot.document.title ||
       String(project.name ?? "datasheet"),
   );
+
+  if (params.preferredMode === "direct") {
+    const originalPdfKey = (project.originalPdf as Record<string, unknown>)?.storageKey as string | undefined;
+    if (!originalPdfKey) {
+      throw new AppError("Original PDF storage key not found for direct layout rebrand", 400, {
+        code: "ORIGINAL_PDF_NOT_FOUND",
+      });
+    }
+
+    const docRecord = await DatasheetDocumentModel.findById(preparedSnapshot.documentId).lean<Record<string, unknown>>();
+    let mappings = Array.isArray(docRecord?.supplierCodeMappings) && docRecord.supplierCodeMappings.length > 0
+      ? (docRecord.supplierCodeMappings as any[])
+      : [];
+
+    if (mappings.length === 0) {
+      const candidates = detectSupplierProductCodesFromEditorJson(preparedSnapshot.document.editorJson);
+      const suggested = buildSuggestedSupplierMappings(candidates);
+      mappings = autoApproveSupplierCodeMappings(suggested);
+    }
+
+    const exportRecord = await DatasheetExportModel.create({
+      projectId: ids.projectObjectId,
+      ownerId: ids.ownerObjectId,
+      datasheetDocumentId: preparedSnapshot.documentId,
+      type: "PDF",
+      status: "PENDING",
+      filename,
+      metadata: {
+        productCode: activeTemplate.productCode,
+        productTitle: activeTemplate.productTitle,
+        documentStatus: activeTemplate.documentStatus,
+        revision: activeTemplate.revision,
+        website: activeTemplate.website,
+        primaryColor: activeTemplate.primaryColor,
+        accentColor: activeTemplate.accentColor,
+        exportMode: "direct",
+      },
+    });
+
+    try {
+      exportRecord.status = "PROCESSING";
+      await exportRecord.save();
+
+      const directResult = await callPythonDirectPdfRebrandService({
+        projectId: params.projectId,
+        ownerId: params.ownerId,
+        sourceStorageKey: originalPdfKey,
+        mappings,
+        branding: {
+          companyName: activeTemplate.companyName || "VELLORE SEMICON",
+          productCode: activeTemplate.productCode || "",
+          productTitle: activeTemplate.productTitle || "",
+          documentStatus: activeTemplate.documentStatus || "Preliminary Datasheet",
+          revision: activeTemplate.revision || "",
+          primaryColor: activeTemplate.primaryColor || "#800000",
+          accentColor: activeTemplate.accentColor || "#D6533E",
+          logoStorageKey: (activeTemplate as any).logoStorageKey || null,
+        },
+        website: activeTemplate.website || "www.velloresemicon.com",
+      });
+
+      exportRecord.status = "COMPLETED";
+      exportRecord.storageKey = directResult.pdfStorageKey || "";
+      exportRecord.fileSize = directResult.fileSize || 0;
+      exportRecord.exportMode = "direct";
+      exportRecord.errorMessage = null;
+      exportRecord.completedAt = new Date();
+      exportRecord.metadata = {
+        ...exportRecord.metadata,
+        exportMode: "direct",
+        replacementReport: directResult.report,
+      };
+      await exportRecord.save();
+    } catch (error) {
+      exportRecord.status = "FAILED";
+      exportRecord.errorMessage = createExportErrorMessage(error);
+      exportRecord.completedAt = new Date();
+      await exportRecord.save();
+    }
+
+    return serializeExport(exportRecord.toObject(), params.projectId);
+  }
+
   const exportRecord = await DatasheetExportModel.create({
     projectId: ids.projectObjectId,
     ownerId: ids.ownerObjectId,
@@ -302,6 +393,8 @@ export function serializeExport(
       layoutMode: String(metadata.layoutMode ?? "two-column"),
       layoutDensity: String(metadata.layoutDensity ?? "technical-dense"),
       pageFillStrategy: String(metadata.pageFillStrategy ?? "balanced"),
+      exportMode: typeof metadata.exportMode === "string" ? metadata.exportMode : undefined,
+      replacementReport: isRecord(metadata.replacementReport) ? (metadata.replacementReport as any) : undefined,
     },
     downloadUrl:
       status === "COMPLETED"
